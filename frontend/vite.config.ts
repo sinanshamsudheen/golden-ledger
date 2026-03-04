@@ -11,6 +11,13 @@ export default defineConfig(({ mode }) => ({
     hmr: {
       overlay: false,
     },
+    proxy: {
+      "/auth": "http://localhost:8000",
+      "/drive": "http://localhost:8000",
+      "/documents": "http://localhost:8000",
+      "/sync": "http://localhost:8000",
+      "/health": "http://localhost:8000",
+    },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {

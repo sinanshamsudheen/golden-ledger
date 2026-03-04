@@ -1,24 +1,83 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# mypy / ruff / pyright
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# ── Environment & Secrets ────────────────────────────────────────────────────
+.env
+!.env.example
+*.env.local
+*.env.*.local
+
+# ── Database ─────────────────────────────────────────────────────────────────
+*.sqlite3
+*.db
+
+# Alembic — keep versions but ignore pycache inside
+server/alembic/versions/__pycache__/
+
+# ── Node / Frontend ──────────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+*.local
+
+# Bun
+bun.lockb
+
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
 
-# Editor directories and files
+# ── Editor ───────────────────────────────────────────────────────────────────
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
+!.vscode/settings.json
+.idea/
 *.suo
-*.ntvs*
-*.njsproj
-*.sln
 *.sw?
+*.swp
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
+
+junk/

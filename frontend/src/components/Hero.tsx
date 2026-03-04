@@ -1,7 +1,10 @@
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/context/AuthContext";
 
 const Hero = () => {
+  const { user, login, isLoading } = useAuth();
+
   return (
     <motion.section
       initial={{ opacity: 0, y: 30 }}
@@ -17,12 +20,20 @@ const Hero = () => {
       <p className="mt-6 max-w-xl text-lg text-muted-foreground">
         Automatically organize and analyze your investment documents.
       </p>
-      <Button
-        variant="outline"
-        className="mt-10 border-primary bg-transparent px-8 py-6 text-sm font-medium tracking-wider text-primary transition-all duration-300 hover:bg-primary hover:text-primary-foreground"
-      >
-        Connect Google Drive
-      </Button>
+      {!isLoading && !user && (
+        <Button
+          onClick={login}
+          variant="outline"
+          className="mt-10 border-primary bg-transparent px-8 py-6 text-sm font-medium tracking-wider text-primary transition-all duration-300 hover:bg-primary hover:text-primary-foreground"
+        >
+          Connect Google Drive
+        </Button>
+      )}
+      {!isLoading && user && (
+        <p className="mt-10 text-sm text-muted-foreground">
+          Signed in as <span className="text-foreground font-medium">{user.email}</span>
+        </p>
+      )}
     </motion.section>
   );
 };
