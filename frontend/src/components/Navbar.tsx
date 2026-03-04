@@ -1,24 +1,38 @@
+import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 
+const NAV_LINKS = [
+  { label: "Dashboard", to: "/dashboard" },
+  { label: "Documents", to: "/documents" },
+];
+
 const Navbar = () => {
   const { user, login, logout, isLoading } = useAuth();
+  const { pathname } = useLocation();
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 border-b border-border/30 bg-background/80 backdrop-blur-md">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-        <span className="font-heading text-xl font-semibold tracking-wide text-foreground">
-          Watar Intelligence
-        </span>
+        <Link
+          to={user ? "/dashboard" : "/"}
+          className="font-heading text-xl font-semibold tracking-wide text-foreground hover:text-primary transition-colors duration-200"
+        >
+          Document Intelligence
+        </Link>
         <div className="flex items-center gap-6">
-          {["Docs", "Support"].map((item) => (
-            <a
-              key={item}
-              href="#"
-              className="text-sm text-muted-foreground transition-colors duration-200 hover:text-primary"
+          {user && NAV_LINKS.map(({ label, to }) => (
+            <Link
+              key={to}
+              to={to}
+              className={`text-sm transition-colors duration-200 ${
+                pathname === to
+                  ? "text-foreground font-medium"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
             >
-              {item}
-            </a>
+              {label}
+            </Link>
           ))}
           {!isLoading && (
             user ? (

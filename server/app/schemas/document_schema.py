@@ -40,3 +40,15 @@ class LatestDocumentResponse(BaseModel):
     name: str
     date: Optional[str] = None
     description: Optional[str] = None
+
+
+class AllDocumentResponse(BaseModel):
+    """Response schema for the /documents/all endpoint."""
+
+    id: int
+    file_id: str
+    type: str
+    name: str
+    date: Optional[str] = None
+    description: Optional[str] = None
+    status: str

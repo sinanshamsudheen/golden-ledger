@@ -59,4 +59,10 @@ export const api = {
   > {
     return apiFetch("/documents/latest");
   },
+
+  getAllDocuments(): Promise<
+    { id: number; file_id: string; type: string; name: string; date: string | null; description: string | null; status: string }[]
+  > {
+    return apiFetch("/documents/all");
+  },
 };

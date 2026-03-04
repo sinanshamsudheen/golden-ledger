@@ -13,7 +13,7 @@ const Index = () => {
       <SyncStatusCard />
       <DocumentsGrid />
       <footer className="border-t border-border py-12 text-center text-xs text-muted-foreground">
-        © 2025 Watar Partners. All rights reserved.
+        © 2025 Document Intelligence. All rights reserved.
       </footer>
     </div>
   );
