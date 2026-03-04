@@ -1,12 +1,20 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import Navbar from "@/components/Navbar";
+import Hero from "@/components/Hero";
+import DriveConnectCard from "@/components/DriveConnectCard";
+import SyncStatusCard from "@/components/SyncStatusCard";
+import DocumentsGrid from "@/components/DocumentsGrid";
 
 const Index = () => {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
+    <div className="min-h-screen bg-background">
+      <Navbar />
+      <Hero />
+      <DriveConnectCard />
+      <SyncStatusCard />
+      <DocumentsGrid />
+      <footer className="border-t border-border py-12 text-center text-xs text-muted-foreground">
+        © 2025 Watar Partners. All rights reserved.
+      </footer>
     </div>
   );
 };
