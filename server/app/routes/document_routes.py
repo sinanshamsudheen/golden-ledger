@@ -30,6 +30,15 @@ limiter = Limiter(key_func=get_remote_address)
 
 _DOC_TYPES = ["pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes"]
 
+# Deals whose ONLY substantive documents are meeting minutes are client/portfolio
+# deals, not pipeline opportunities — hide them from the UI entirely.
+_PIPELINE_TYPES = {t for t in _DOC_TYPES if t != "meeting_minutes"}
+
+
+def _is_minutes_only(current_by_type: dict) -> bool:
+    """Return True if the deal has no pipeline-relevant document types."""
+    return not any(t in _PIPELINE_TYPES for t in current_by_type)
+
 
 def _fmt_date(dt) -> str | None:
     return dt.strftime("%Y-%m-%d") if dt else None
@@ -172,6 +181,10 @@ def list_deals(
 
         doc_count = sum(1 for v in slots.values() if v is not None)
 
+        # Skip client/portfolio deals that only have meeting minutes
+        if _is_minutes_only(current_by_type):
+            continue
+
         result.append(
             DealResponse(
                 id=deal.id,
@@ -266,6 +279,10 @@ def get_deal(
         )
 
     doc_count = sum(1 for v in slots.values() if v is not None)
+
+    if _is_minutes_only(current_by_type):
+        raise HTTPException(status_code=404, detail="Deal not found")
+
     return DealResponse(
         id=deal.id,
         name=deal.name,
