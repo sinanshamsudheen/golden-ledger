@@ -28,6 +28,8 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
+import sqlalchemy
+
 # ── Path setup ────────────────────────────────────────────────────────────────
 _SERVER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, _SERVER_DIR)
@@ -40,7 +42,7 @@ if os.path.exists(_env_path):
 
 # ── Internal imports ──────────────────────────────────────────────────────────
 from app.config import settings as cfg
-from app.database import SessionLocal
+from app.database import SessionLocal, engine
 from app.models.user import User
 from app.models.document import Document
 from app.models.deal import Deal
@@ -257,6 +259,26 @@ def process_user(db, user: User) -> None:
             llm_results[result.custom_id] = result
 
         logger.info(f"User {user.id}: {len(prepared)} file(s) through LLM batch")
+
+        # ── Reconnect DB after potentially long LLM batch ─────────────────────
+        # The LLM call can take minutes; Railway's Postgres proxy may drop the
+        # idle SSL connection in the meantime.  Always close + reopen the
+        # session's connection so SQLAlchemy grabs a fresh one from the pool
+        # (pool_pre_ping will verify liveness) before persisting.
+        try:
+            db.execute(sqlalchemy.text("SELECT 1"))
+            logger.debug("DB ping OK before persist step")
+        except Exception as _ping_err:
+            logger.warning("DB ping failed (%s) – reconnecting", _ping_err)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            try:
+                db.close()
+            except Exception:
+                pass
+            engine.dispose()  # recycle all pooled connections
 
         # ── Step 3: Persist ───────────────────────────────────────────────────
         batch_persisted = 0
