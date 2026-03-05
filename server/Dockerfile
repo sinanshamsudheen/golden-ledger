@@ -11,11 +11,11 @@ RUN apt-get update \
 WORKDIR /app
 
 # ── Deps layer (cached unless requirements.txt changes) ──────────────────────
-COPY server/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Application code ─────────────────────────────────────────────────────────
-COPY server/ .
+COPY . .
 
 # Make entrypoint executable
 RUN chmod +x docker-entrypoint.sh
