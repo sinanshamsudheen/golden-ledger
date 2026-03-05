@@ -33,6 +33,8 @@ class Document(Base):
     folder_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # Version tracking: current | superseded
     version_status: Mapped[str] = mapped_column(String, default="current", nullable=False)
+    # External vectorizer pipeline doc ID (assigned by Invitus AI Insights after ingestion)
+    vectorizer_doc_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

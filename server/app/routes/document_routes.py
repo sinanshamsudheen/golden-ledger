@@ -154,6 +154,7 @@ def list_deals(
                 name=doc.file_name,
                 date=_fmt_date(doc.doc_created_date),
                 description=doc.description,
+                vectorizer_doc_id=doc.vectorizer_doc_id,
             )
 
         doc_count = sum(1 for v in slots.values() if v is not None)
@@ -165,6 +166,9 @@ def list_deals(
                 documents=DealDocSlots(**slots),
                 archived=archived,
                 doc_count=doc_count,
+                investment_type=deal.investment_type,
+                deal_status=deal.deal_status,
+                deal_reason=deal.deal_reason,
             )
         )
 
@@ -233,6 +237,7 @@ def get_deal(
             name=doc.file_name,
             date=_fmt_date(doc.doc_created_date),
             description=doc.description,
+            vectorizer_doc_id=doc.vectorizer_doc_id,
         )
 
     doc_count = sum(1 for v in slots.values() if v is not None)
@@ -242,4 +247,7 @@ def get_deal(
         documents=DealDocSlots(**slots),
         archived=archived,
         doc_count=doc_count,
+        investment_type=deal.investment_type,
+        deal_status=deal.deal_status,
+        deal_reason=deal.deal_reason,
     )

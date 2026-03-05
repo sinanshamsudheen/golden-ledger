@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import TYPE_CHECKING
-from sqlalchemy import String, Integer, DateTime, ForeignKey, UniqueConstraint
+from typing import Optional, TYPE_CHECKING
+from sqlalchemy import String, Text, Integer, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from ..database import Base
@@ -23,6 +23,15 @@ class Deal(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # ── Analytical pipeline results ───────────────────────────────────────────
+    # Investment classification: Fund | Direct | Co-Investment
+    investment_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Investment committee outcome: accepted | rejected
+    deal_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # 1-2 sentence reason from the Analytical endpoint
+    deal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # External pipeline job ID (Invitus AI Insights) — for debugging
+    vectorizer_job_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="deals")
     documents: Mapped[list["Document"]] = relationship("Document", back_populates="deal")

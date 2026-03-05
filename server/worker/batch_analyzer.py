@@ -38,7 +38,7 @@ OUTPUT_SCHEMA = """
   "results": [
     {
       "custom_id": "<exact custom_id from input>",
-      "doc_type": "<one of: pitch_deck | investment_report | deal_memo | financial_report | other>",
+      "doc_type": "<one of: pitch_deck | investment_memo | prescreening_report | meeting_minutes | other>",
       "deal_name": "<company or deal name, max 3 words, or null>",
       "doc_date": "<YYYY-MM-DD or null>",
       "summary": "<two sentence description of the document>"
@@ -190,7 +190,7 @@ ARR/MRR, unit economics, LTV/CAC, burn rate, cap table, deal memo
 market size, founding team, use of proceeds
 → `pitch_deck`
 
-DEFAULT: If none match → `pitch_deck`
+DEFAULT: If none match → `other`
 
 Must be exactly one of: `{valid_types_str}`
 

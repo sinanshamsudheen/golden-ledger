@@ -13,6 +13,22 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     FRONTEND_URL: str = "http://localhost:5173"
 
+    # ── External vectorizer (Invitus AI Insights) — all optional ─────────────
+    # If VECTORIZER_INGEST_URL is not set the worker skips the vectorization step.
+    # Base URL for the document ingestion API  (e.g. https://ingestion.azurewebsites.net)
+    VECTORIZER_INGEST_URL: Optional[str] = None
+    # Base URL for the RAG / Analytical gateway (may differ from ingestion host)
+    VECTORIZER_ANALYTICAL_URL: Optional[str] = None
+    # Azure Functions host key shared by both endpoints
+    VECTORIZER_FUNCTION_KEY: Optional[str] = None
+    # Tenant identifier assigned to your organisation
+    VECTORIZER_TENANT_ID: Optional[str] = None
+    # Deployment region tag sent in the ingestion payload
+    VECTORIZER_REGION: str = "uae"
+    # Module and use-case identifiers (configure to match your Invitus setup)
+    VECTORIZER_MODULE_ID: str = "invictus-deals"
+    VECTORIZER_USE_CASE_ID: str = "due-diligence"
+
     @field_validator("SECRET_KEY")
     @classmethod
     def secret_key_must_be_strong(cls, v: str) -> str:

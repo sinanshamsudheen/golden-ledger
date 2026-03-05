@@ -13,9 +13,9 @@ interface Doc {
 
 const TYPE_LABELS: Record<string, string> = {
   pitch_deck: "Pitch Deck",
-  investment_report: "Investment Report",
-  deal_memo: "Deal Memo",
-  financial_report: "Financial Report",
+  investment_memo: "Investment Memo",
+  prescreening_report: "Pre-screening",
+  meeting_minutes: "Meeting Minutes",
   other: "Other",
 };
 

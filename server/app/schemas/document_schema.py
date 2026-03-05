@@ -68,6 +68,7 @@ class DealDocSlot(BaseModel):
     name: str
     date: Optional[str] = None
     description: Optional[str] = None
+    vectorizer_doc_id: Optional[str] = None
 
 
 class DealDocSlots(BaseModel):
@@ -90,10 +91,14 @@ class ArchivedDoc(BaseModel):
 
 
 class DealResponse(BaseModel):
-    """Full deal with its current document slots and archive."""
+    """Full deal with its current document slots, archive, and analytical results."""
 
     id: int
     name: str
     documents: DealDocSlots
     archived: list[ArchivedDoc] = []
     doc_count: int  # number of current (non-archived) documents
+    # Populated by the Analytical endpoint after vectorization
+    investment_type: Optional[str] = None   # Fund | Direct | Co-Investment
+    deal_status: Optional[str] = None       # accepted | rejected
+    deal_reason: Optional[str] = None       # IC rationale (1-2 sentences)

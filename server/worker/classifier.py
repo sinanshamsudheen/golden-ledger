@@ -380,7 +380,9 @@ _KEYWORDS: dict[str, list[str]] = {
     ],
 }
 
-VALID_TYPES = set(_KEYWORDS.keys())
+# "other" is not in the keyword dict (it's the catch-all) but must be a recognised type
+# so _parse_response in batch_analyzer doesn't coerce it back to _FALLBACK_TYPE.
+VALID_TYPES = set(_KEYWORDS.keys()) | {"other"}
 _CONFIDENCE_THRESHOLD = 3  # minimum keyword hits to trust the heuristic (raised from 2 — larger dictionaries need higher bar to avoid false positives)
 
 

@@ -39,9 +39,11 @@ if os.path.exists(_env_path):
     load_dotenv(_env_path)
 
 # ── Internal imports ──────────────────────────────────────────────────────────
+from app.config import settings as cfg
 from app.database import SessionLocal
 from app.models.user import User
 from app.models.document import Document
+from app.models.deal import Deal
 from app.schemas.document_schema import DocumentCreate
 from app.services.document_service import (
     create_document,
@@ -60,6 +62,7 @@ from worker.parser import extract_text
 from worker.batch_analyzer import analyze_batch, AnalysisResult
 from worker.summarizer import text_summary
 from worker.deal_resolver import get_or_create_deal
+from worker.vectorizer import ingest_and_analyze_deal
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -127,29 +130,6 @@ def _mark_superseded_versions(db, document: Document) -> None:
         db.commit()
 
 
-# ── Vectorizer integration ────────────────────────────────────────────────────
-
-def send_to_vectorizer(document: Document, text: str) -> None:
-    """Placeholder: send a processed document to the external vectorizer pipeline."""
-    date_str = (
-        document.doc_created_date.strftime("%Y-%m-%d") if document.doc_created_date else None
-    )
-    payload = {
-        "doc_id": document.id,
-        "text": text[:5000],
-        "metadata": {
-            "doc_type": document.doc_type,
-            "deal_id": document.deal_id,
-            "date": date_str,
-        },
-    }
-    logger.info(
-        f"[vectorizer] doc_id={document.id} type={document.doc_type} "
-        f"deal_id={document.deal_id} name='{document.file_name}'"
-    )
-    _ = payload  # TODO: replace with real HTTP call
-
-
 # ── Per-user pipeline ─────────────────────────────────────────────────────────
 
 def process_user(db, user: User) -> None:
@@ -178,7 +158,6 @@ def process_user(db, user: User) -> None:
 
     # Accumulators across all batches
     all_processed_docs: list[Document] = []
-    text_cache: dict[str, str] = {}  # file_id → trimmed text for the vectorizer
 
     total = len(new_files)
     total_batches = (total + INGEST_BATCH - 1) // INGEST_BATCH
@@ -280,6 +259,23 @@ def process_user(db, user: User) -> None:
                     doc_date = item["drive_created_time"]
                     description = text_summary(item["text"])
 
+                # Unrelated documents: store a permanent tombstone so this
+                # file_id stays in known_ids and is never re-downloaded on
+                # any future run. These rows are invisible to all API queries
+                # and are never passed to the vectorizer.
+                if doc_type == "other":
+                    update_document(
+                        db,
+                        document.id,
+                        doc_type="other",
+                        description=description,
+                        doc_created_date=doc_date,
+                        folder_path=folder_path or None,
+                        status="skipped",
+                    )
+                    logger.info(f"Skipped '{fname}' — unrelated document (type=other)")
+                    continue
+
                 deal_id: Optional[int] = None
                 if raw_deal_name:
                     deal = get_or_create_deal(db, user.id, raw_deal_name)
@@ -301,8 +297,6 @@ def process_user(db, user: User) -> None:
                 )
                 if updated:
                     all_processed_docs.append(updated)
-                    # Cache only what the vectorizer needs — avoids re-download later
-                    text_cache[fid] = item["text"][:5000]
                     batch_persisted += 1
 
             except Exception as exc:
@@ -323,27 +317,45 @@ def process_user(db, user: User) -> None:
     for doc in all_processed_docs:
         _mark_superseded_versions(db, doc)
 
-    # ── Step 5: Vectorize latest per type ─────────────────────────────────────
+    # ── Step 5: Vectorize + analyze per deal (requires VECTORIZER_INGEST_URL) ────
+    if not cfg.VECTORIZER_INGEST_URL:
+        logger.info(
+            f"User {user.id}: VECTORIZER_INGEST_URL not configured — skipping vectorization"
+        )
+        return
+
     latest_docs = get_latest_documents_per_type(db, user.id)
-    logger.info(f"User {user.id}: {len(latest_docs)} document(s) to vectorize")
 
+    # Group by deal_id — only deal-associated documents get the full pipeline.
+    # Dealless documents are skipped: without a deal they cannot receive an
+    # investment_type / deal_status from the Analytical endpoint.
+    per_deal_docs: dict[int, list[Document]] = {}
+    dealless_count = 0
     for doc in latest_docs:
-        if doc.file_id in text_cache:
-            text = text_cache[doc.file_id]
+        if doc.deal_id is not None:
+            per_deal_docs.setdefault(doc.deal_id, []).append(doc)
         else:
-            # Doc was processed in a prior run — must re-download
-            content = fetch_file_content(user, doc.file_id, credentials=drive_credentials)
-            if content is None:
-                logger.warning(f"Cannot vectorize '{doc.file_name}' – download failed")
-                continue
-            try:
-                text = extract_text(content, doc.file_name)
-            except Exception as exc:
-                logger.error(f"Re-extraction failed for '{doc.file_name}': {exc}")
-                continue
+            dealless_count += 1
 
-        send_to_vectorizer(doc, text)
-        update_document(db, doc.id, status="vectorized")
+    logger.info(
+        f"User {user.id}: {len(per_deal_docs)} deal(s) to vectorize+analyze "
+        f"({dealless_count} dealless doc(s) skipped)"
+    )
+
+    for deal_id, deal_doc_list in per_deal_docs.items():
+        deal = db.query(Deal).filter(Deal.id == deal_id).first()
+        if deal is None:
+            logger.warning(f"Deal {deal_id} not found in DB — skipping")
+            continue
+        try:
+            ingest_and_analyze_deal(db, user, deal, deal_doc_list)
+            for doc in deal_doc_list:
+                update_document(db, doc.id, status="vectorized")
+        except Exception as exc:
+            logger.error(
+                f"Vectorization/analysis failed for deal {deal_id} ({deal.name!r}): {exc}",
+                exc_info=True,
+            )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

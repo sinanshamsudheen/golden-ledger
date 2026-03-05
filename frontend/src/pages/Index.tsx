@@ -3,6 +3,7 @@ import Hero from "@/components/Hero";
 import DriveConnectCard from "@/components/DriveConnectCard";
 import SyncStatusCard from "@/components/SyncStatusCard";
 import DocumentsGrid from "@/components/DocumentsGrid";
+import DealsGrid from "@/components/DealsGrid";
 
 const Index = () => {
   return (
@@ -12,6 +13,7 @@ const Index = () => {
       <DriveConnectCard />
       <SyncStatusCard />
       <DocumentsGrid />
+      <DealsGrid />
       <footer className="border-t border-border py-12 text-center text-xs text-muted-foreground">
         © 2025 Document Intelligence. All rights reserved.
       </footer>
