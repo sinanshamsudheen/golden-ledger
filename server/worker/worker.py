@@ -20,9 +20,11 @@ Scheduled via cron:
     0 2 * * * /path/to/venv/bin/python /path/to/server/worker/worker.py
 """
 
+import fcntl
 import logging
 import os
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
@@ -50,6 +52,7 @@ from app.services.document_service import (
 from worker.drive_ingestion import (
     get_unprocessed_files,
     fetch_file_content,
+    get_user_drive_credentials,
     compute_checksum,
     parse_drive_created_time,
 )
@@ -65,29 +68,56 @@ logging.basicConfig(
 )
 logger = logging.getLogger("worker")
 
+INGEST_BATCH = 100  # max files per download → LLM → persist cycle — caps peak RAM
 
 # ── Version management ────────────────────────────────────────────────────────
 
 def _mark_superseded_versions(db, document: Document) -> None:
     """
-    Mark older documents with the same (user_id, doc_type, deal_id) as superseded.
-    Only runs when deal_id and doc_created_date are both known.
+    Mark older documents with the same type+deal as superseded.
+
+    Two-pass strategy:
+      Pass A (deal-scoped)  — when deal_id is known, group by (user_id, doc_type, deal_id).
+      Pass B (folder-scoped) — when deal_id is None, group by (user_id, doc_type, folder_path)
+                               so files in misc/ or unresolved folders still get versioned.
+
+    Both passes require doc_created_date to determine which is newer.
     """
-    if not document.deal_id or not document.doc_created_date:
+    if not document.doc_created_date:
         return
 
-    older = (
-        db.query(Document)
-        .filter(
-            Document.user_id == document.user_id,
-            Document.doc_type == document.doc_type,
-            Document.deal_id == document.deal_id,
-            Document.id != document.id,
-            Document.doc_created_date < document.doc_created_date,
-            Document.version_status == "current",
+    if document.deal_id:
+        # Pass A: deal-scoped versioning
+        older = (
+            db.query(Document)
+            .filter(
+                Document.user_id == document.user_id,
+                Document.doc_type == document.doc_type,
+                Document.deal_id == document.deal_id,
+                Document.id != document.id,
+                Document.doc_created_date < document.doc_created_date,
+                Document.version_status == "current",
+            )
+            .all()
         )
-        .all()
-    )
+    else:
+        # Pass B: folder-scoped versioning for dealless documents
+        if not document.folder_path:
+            return
+        older = (
+            db.query(Document)
+            .filter(
+                Document.user_id == document.user_id,
+                Document.doc_type == document.doc_type,
+                Document.deal_id.is_(None),
+                Document.folder_path == document.folder_path,
+                Document.id != document.id,
+                Document.doc_created_date < document.doc_created_date,
+                Document.version_status == "current",
+            )
+            .all()
+        )
+
     for doc in older:
         doc.version_status = "superseded"
         logger.info(
@@ -123,7 +153,14 @@ def send_to_vectorizer(document: Document, text: str) -> None:
 # ── Per-user pipeline ─────────────────────────────────────────────────────────
 
 def process_user(db, user: User) -> None:
-    """Run the full ingestion pipeline for a single user."""
+    """
+    Run the full ingestion pipeline for a single user.
+
+    Files are processed in memory-bounded batches of INGEST_BATCH to cap
+    peak RAM.  Credentials are fetched once and reused across all downloads
+    to avoid an OAuth round-trip per file.  Version management and
+    vectorization run once after all batches for a consistent final state.
+    """
     logger.info(f"── Starting pipeline for user {user.id} ({user.email})")
 
     new_files = get_unprocessed_files(db, user)
@@ -131,140 +168,162 @@ def process_user(db, user: User) -> None:
         logger.info(f"No new files for user {user.id}")
         return
 
-    # ── Step 1: Download + extract text (parallel) ───────────────────────────
-    prepared: list[dict] = []
+    # Get credentials once — shared across all download threads so the OAuth
+    # token is refreshed exactly once, not once per file.
+    try:
+        drive_credentials = get_user_drive_credentials(user)
+    except Exception as exc:
+        logger.warning(f"Could not pre-fetch drive credentials: {exc} — falling back to per-file auth")
+        drive_credentials = None
 
-    def _download_and_extract(file_meta: dict) -> dict | None:
-        file_id = file_meta["id"]
-        file_name = file_meta["name"]
-        folder_path = file_meta.get("folder_path", "")
+    # Accumulators across all batches
+    all_processed_docs: list[Document] = []
+    text_cache: dict[str, str] = {}  # file_id → trimmed text for the vectorizer
 
-        content = fetch_file_content(user, file_id)
-        if content is None:
-            logger.error(f"Skipping '{file_name}' – download failed")
-            return None
+    total = len(new_files)
+    total_batches = (total + INGEST_BATCH - 1) // INGEST_BATCH
 
-        try:
-            text = extract_text(content, file_name)
-        except Exception as exc:
-            logger.error(f"Skipping '{file_name}' – text extraction failed: {exc}")
-            return None
-
-        return {
-            "file_meta": file_meta,
-            "content": content,
-            "text": text,
-            "checksum": compute_checksum(content),
-            "drive_created_time": parse_drive_created_time(file_meta),
-            "folder_path": folder_path,
-        }
-
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {pool.submit(_download_and_extract, fm): fm for fm in new_files}
-        for future in as_completed(futures):
-            result = future.result()
-            if result is not None:
-                prepared.append(result)
-
-    # Restore original ordering (as_completed gives arbitrary order)
-    order = {fm["id"]: idx for idx, fm in enumerate(new_files)}
-    prepared.sort(key=lambda x: order.get(x["file_meta"]["id"], 0))
-
-    if not prepared:
-        return
-
-    # ── Step 2: Batch LLM analysis (all docs) ────────────────────────────────
-    # folder_path is passed as a soft context hint so the LLM can factor in
-    # file location, but LLM output is always authoritative.
-    llm_results: dict[str, AnalysisResult] = {}
-    batch_items = [
-        {
-            "custom_id": item["file_meta"]["id"],
-            "file_name": item["file_meta"]["name"],
-            "text": item["text"],
-            "folder_path": item["folder_path"],
-        }
-        for item in prepared
-    ]
-    analysis = analyze_batch(batch_items)
-    for result in analysis:
-        llm_results[result.custom_id] = result
-
-    logger.info(f"User {user.id}: {len(prepared)} file(s) through LLM batch")
-
-    # ── Step 3: Persist all documents ────────────────────────────────────────
-    processed_docs: list[Document] = []
-
-    for item in prepared:
-        fid = item["file_meta"]["id"]
-        fname = item["file_meta"]["name"]
-        folder_path = item["folder_path"]
-
-        doc_data = DocumentCreate(
-            user_id=user.id,
-            file_id=fid,
-            file_name=fname,
-            drive_created_time=item["drive_created_time"],
-            checksum=item["checksum"],
-            status="pending",
+    for batch_start in range(0, total, INGEST_BATCH):
+        batch = new_files[batch_start : batch_start + INGEST_BATCH]
+        batch_num = batch_start // INGEST_BATCH + 1
+        logger.info(
+            f"User {user.id}: batch {batch_num}/{total_batches} — {len(batch)} file(s)"
         )
-        document = create_document(db, doc_data)
 
-        try:
-            if fid in llm_results:
-                r = llm_results[fid]
-                doc_type = r.doc_type
-                raw_deal_name: Optional[str] = r.deal_name
-                doc_date = r.doc_date or item["drive_created_time"]
-                description = r.summary or text_summary(item["text"])
-            else:
-                # LLM unavailable — store with safe defaults, no deal attribution
-                doc_type = "pitch_deck"
-                raw_deal_name = None
-                doc_date = item["drive_created_time"]
-                description = text_summary(item["text"])
+        # ── Step 1: Download + extract text (parallel) ───────────────────────
+        prepared: list[dict] = []
 
-            # Resolve deal_id
-            deal_id: Optional[int] = None
-            if raw_deal_name:
-                deal = get_or_create_deal(db, user.id, raw_deal_name)
-                deal_id = deal.id if deal else None
+        def _download_and_extract(file_meta: dict) -> dict | None:
+            file_id = file_meta["id"]
+            file_name = file_meta["name"]
+            folder_path = file_meta.get("folder_path", "")
 
-            updated = update_document(
-                db,
-                document.id,
-                doc_type=doc_type,
-                description=description,
-                doc_created_date=doc_date,
-                deal_id=deal_id,
-                folder_path=folder_path or None,
-                status="processed",
+            content = fetch_file_content(user, file_id, credentials=drive_credentials)
+            if content is None:
+                logger.error(f"Skipping '{file_name}' – download failed")
+                return None
+
+            try:
+                text = extract_text(content, file_name)
+            except Exception as exc:
+                logger.error(f"Skipping '{file_name}' – text extraction failed: {exc}")
+                return None
+
+            return {
+                "file_meta": file_meta,
+                "content": content,
+                "text": text,
+                "checksum": compute_checksum(content),
+                "drive_created_time": parse_drive_created_time(file_meta),
+                "folder_path": folder_path,
+            }
+
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            futures = {pool.submit(_download_and_extract, fm): fm for fm in batch}
+            for future in as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    prepared.append(result)
+
+        # Restore batch ordering (as_completed returns in completion order)
+        order = {fm["id"]: idx for idx, fm in enumerate(batch)}
+        prepared.sort(key=lambda x: order.get(x["file_meta"]["id"], 0))
+
+        if not prepared:
+            continue
+
+        # ── Step 2: Batch LLM analysis ───────────────────────────────────────
+        llm_results: dict[str, AnalysisResult] = {}
+        batch_items = [
+            {
+                "custom_id": item["file_meta"]["id"],
+                "file_name": item["file_meta"]["name"],
+                "text": item["text"],
+                "folder_path": item["folder_path"],
+            }
+            for item in prepared
+        ]
+        analysis = analyze_batch(batch_items)
+        for result in analysis:
+            llm_results[result.custom_id] = result
+
+        logger.info(f"User {user.id}: {len(prepared)} file(s) through LLM batch")
+
+        # ── Step 3: Persist ───────────────────────────────────────────────────
+        batch_persisted = 0
+        for item in prepared:
+            fid = item["file_meta"]["id"]
+            fname = item["file_meta"]["name"]
+            folder_path = item["folder_path"]
+
+            doc_data = DocumentCreate(
+                user_id=user.id,
+                file_id=fid,
+                file_name=fname,
+                drive_created_time=item["drive_created_time"],
+                checksum=item["checksum"],
+                status="pending",
             )
-            logger.info(
-                f"Persisted '{fname}' → type={doc_type} deal_id={deal_id} "
-                f"folder='{folder_path}' date={doc_date}"
-            )
-            if updated:
-                processed_docs.append(updated)
+            document = create_document(db, doc_data)
 
-        except Exception as exc:
-            logger.error(f"Persist failed for '{fname}': {exc}", exc_info=True)
-            update_document(db, document.id, status="failed")
+            try:
+                if fid in llm_results:
+                    r = llm_results[fid]
+                    doc_type = r.doc_type
+                    raw_deal_name: Optional[str] = r.deal_name
+                    doc_date = r.doc_date or item["drive_created_time"]
+                    description = r.summary or text_summary(item["text"])
+                else:
+                    # LLM unavailable — store with safe defaults
+                    doc_type = "pitch_deck"
+                    raw_deal_name = None
+                    doc_date = item["drive_created_time"]
+                    description = text_summary(item["text"])
 
-    logger.info(
-        f"User {user.id}: {len(processed_docs)}/{len(prepared)} file(s) persisted"
-    )
+                deal_id: Optional[int] = None
+                if raw_deal_name:
+                    deal = get_or_create_deal(db, user.id, raw_deal_name)
+                    deal_id = deal.id if deal else None
 
-    # ── Step 4: Version management ────────────────────────────────────────────
-    for doc in processed_docs:
+                updated = update_document(
+                    db,
+                    document.id,
+                    doc_type=doc_type,
+                    description=description,
+                    doc_created_date=doc_date,
+                    deal_id=deal_id,
+                    folder_path=folder_path or None,
+                    status="processed",
+                )
+                logger.info(
+                    f"Persisted '{fname}' → type={doc_type} deal_id={deal_id} "
+                    f"folder='{folder_path}' date={doc_date}"
+                )
+                if updated:
+                    all_processed_docs.append(updated)
+                    # Cache only what the vectorizer needs — avoids re-download later
+                    text_cache[fid] = item["text"][:5000]
+                    batch_persisted += 1
+
+            except Exception as exc:
+                logger.error(f"Persist failed for '{fname}': {exc}", exc_info=True)
+                update_document(db, document.id, status="failed")
+
+        logger.info(
+            f"User {user.id}: batch {batch_num}/{total_batches} complete "
+            f"({batch_persisted}/{len(prepared)} persisted, "
+            f"{len(all_processed_docs)} total so far)"
+        )
+        # Release batch content bytes — text_cache already holds what we need
+        prepared.clear()
+
+    # ── Step 4: Version management (once, after all batches) ─────────────────
+    # Running after all docs are persisted is more correct: the full date
+    # picture is visible, so older duplicates across batch boundaries are caught.
+    for doc in all_processed_docs:
         _mark_superseded_versions(db, doc)
 
     # ── Step 5: Vectorize latest per type ─────────────────────────────────────
-    # Build a cache of already-extracted text from this run to avoid re-downloading
-    text_cache: dict[str, str] = {
-        item["file_meta"]["id"]: item["text"] for item in prepared
-    }
-
     latest_docs = get_latest_documents_per_type(db, user.id)
     logger.info(f"User {user.id}: {len(latest_docs)} document(s) to vectorize")
 
@@ -272,8 +331,8 @@ def process_user(db, user: User) -> None:
         if doc.file_id in text_cache:
             text = text_cache[doc.file_id]
         else:
-            # Doc was already processed in a prior run — must re-download
-            content = fetch_file_content(user, doc.file_id)
+            # Doc was processed in a prior run — must re-download
+            content = fetch_file_content(user, doc.file_id, credentials=drive_credentials)
             if content is None:
                 logger.warning(f"Cannot vectorize '{doc.file_name}' – download failed")
                 continue
@@ -289,23 +348,72 @@ def process_user(db, user: User) -> None:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _process_user_isolated(user_id: int) -> None:
+    """Process a single user in an isolated DB session (safe for threads)."""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is None:
+            logger.warning(f"User {user_id} not found — skipping")
+            return
+        process_user(db, user)
+    except Exception as exc:
+        logger.error(
+            f"Unhandled error for user {user_id}: {exc}",
+            exc_info=True,
+        )
+    finally:
+        db.close()
+
+
 def run() -> None:
-    """Main worker loop: iterate over all users and run the pipeline."""
+    """Main worker loop: process all users in parallel (one thread each, max 5)."""
+    _lock_path = os.path.join(tempfile.gettempdir(), "golden_ledger_worker.lock")
+    lock_file = open(_lock_path, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        logger.warning(
+            "Another worker instance is already running (lock held at %s) — exiting.",
+            _lock_path,
+        )
+        lock_file.close()
+        return
+
+    try:
+        _run()
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
+
+
+def _run() -> None:
+    """Inner run — called only when the exclusive lock is held."""
     logger.info("═══ Golden Ledger nightly worker started ═══")
     db = SessionLocal()
     try:
-        users = db.query(User).all()
-        logger.info(f"Found {len(users)} user(s)")
-        for user in users:
-            try:
-                process_user(db, user)
-            except Exception as exc:
-                logger.error(
-                    f"Unhandled error for user {user.id} ({user.email}): {exc}",
-                    exc_info=True,
-                )
+        user_ids = [u.id for u in db.query(User.id).all()]
     finally:
         db.close()
+
+    if not user_ids:
+        logger.info("No users found — nothing to do")
+        logger.info("═══ Worker run complete ═══")
+        return
+
+    logger.info(f"Found {len(user_ids)} user(s) — processing in parallel (max 5 threads)")
+    max_workers = min(len(user_ids), 5)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_process_user_isolated, uid): uid for uid in user_ids}
+        for future in as_completed(futures):
+            uid = futures[future]
+            exc = future.exception()
+            if exc:
+                logger.error(f"Thread for user {uid} raised: {exc}", exc_info=exc)
+            else:
+                logger.info(f"User {uid} processed successfully")
+
     logger.info("═══ Worker run complete ═══")
 
 

@@ -31,16 +31,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Start the Golden Ledger API server")
     parser.add_argument("--host",      default=os.environ.get("HOST", "0.0.0.0"),   help="Bind host")
     parser.add_argument("--port",      default=int(os.environ.get("PORT", 8000)),   type=int, help="Bind port")
-    parser.add_argument("--no-reload", action="store_true",                          help="Disable hot-reload (use in production)")
+    parser.add_argument("--reload",    action="store_true",                          help="Enable hot-reload (dev only)")
     parser.add_argument("--log-level", default=os.environ.get("LOG_LEVEL", "info"), help="Uvicorn log level")
     args = parser.parse_args()
 
-    reload = not args.no_reload
+    reload = args.reload
 
     print(
-        f"\n🪙  Golden Ledger API\n"
+        f"\n�  Golden Ledger API\n"
         f"   Host      : {args.host}:{args.port}\n"
-        f"   Hot-reload: {reload}\n"
+        f"   Hot-reload: {reload} (pass --reload to enable in dev)\n"
         f"   Log level : {args.log_level}\n"
         f"   Docs      : http://localhost:{args.port}/docs\n"
     )

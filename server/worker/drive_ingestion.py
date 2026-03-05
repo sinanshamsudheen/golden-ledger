@@ -26,10 +26,12 @@ from sqlalchemy.orm import Session
 
 from app.services.drive_service import (
     build_drive_service,
+    build_drive_service_from_credentials,
+    get_credentials,
     list_files_recursive,
     download_file,
 )
-from app.services.document_service import get_document_by_file_id, get_document_by_checksum
+from app.models.document import Document as _Doc
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -42,12 +44,9 @@ def get_unprocessed_files(
     """
     Return Drive file metadata for files that are not yet in the database.
 
-    Args:
-        db:   Active database session.
-        user: User record with refresh_token and folder_id populated.
-
-    Returns:
-        List of Drive file metadata dicts for new files only.
+    Uses two bulk DB queries (all known file IDs + checksums for the user)
+    instead of per-file lookups, reducing query count from O(N) to O(1).
+    Passes shared credentials to list_files_recursive for parallel BFS.
     """
     if not user.refresh_token or not user.folder_id:
         logger.warning(
@@ -56,8 +55,10 @@ def get_unprocessed_files(
         return []
 
     try:
-        service = build_drive_service(user.refresh_token)
-        all_files = list_files_recursive(service, user.folder_id)
+        # Build credentials once — shared across all parallel folder-listing threads
+        credentials = get_credentials(user.plaintext_refresh_token)
+        service = build_drive_service_from_credentials(credentials)
+        all_files = list_files_recursive(service, user.folder_id, credentials=credentials)
 
         # Strip the root folder name from every folder_path so it's never
         # mistaken for a deal name. E.g. "TestDrive/Acme/Q1" → "Acme/Q1"
@@ -75,23 +76,31 @@ def get_unprocessed_files(
         logger.error(f"Drive API error for user {user.id}: {exc}")
         return []
 
+    # ── Batch DB lookup — 2 queries regardless of how many files exist ─────────
+    known_ids: set[str] = {
+        row[0]
+        for row in db.query(_Doc.file_id).filter(_Doc.user_id == user.id).all()
+    }
+    known_checksums: set[str] = {
+        row[0]
+        for row in db.query(_Doc.checksum)
+        .filter(_Doc.user_id == user.id, _Doc.checksum.isnot(None))
+        .all()
+    }
+
     new_files: List[Dict[str, Any]] = []
     for file_meta in all_files:
-        # Skip if already processed by Drive file ID
-        if get_document_by_file_id(db, file_meta["id"]) is not None:
+        if file_meta["id"] in known_ids:
             logger.debug(
                 f"Skipping already-processed file '{file_meta['name']}' ({file_meta['id']})"
             )
             continue
-
-        # Skip if identical content already processed (re-upload with new file ID)
         drive_checksum = file_meta.get("md5Checksum")
-        if drive_checksum and get_document_by_checksum(db, user.id, drive_checksum) is not None:
+        if drive_checksum and drive_checksum in known_checksums:
             logger.info(
                 f"Skipping duplicate content '{file_meta['name']}' — checksum {drive_checksum} already processed"
             )
             continue
-
         new_files.append(file_meta)
 
     logger.info(
@@ -103,19 +112,32 @@ def get_unprocessed_files(
 _RETRY_DELAYS = [2, 5, 10]  # seconds between attempts (3 attempts total)
 
 
-def fetch_file_content(user: User, file_id: str) -> Optional[bytes]:
+def get_user_drive_credentials(user: User):
+    """
+    Build and return valid Drive credentials for a user.
+    Call once per worker run and pass the result to fetch_file_content
+    to avoid an OAuth token refresh for every single file download.
+    """
+    return get_credentials(user.plaintext_refresh_token)
+
+
+def fetch_file_content(user: User, file_id: str, credentials=None) -> Optional[bytes]:
     """
     Download a file from Google Drive with exponential backoff retry.
 
-    Retries up to 3 times on failure (handles Drive API rate limits).
-    Returns raw bytes, or None if all attempts fail.
+    Pass ``credentials`` (from get_user_drive_credentials) to reuse an
+    already-refreshed token instead of triggering a new OAuth refresh
+    per file — critical when downloading hundreds of files in parallel.
     """
     last_exc: Exception | None = None
     for attempt, delay in enumerate([0] + _RETRY_DELAYS, start=1):
         if delay:
             time.sleep(delay)
         try:
-            service = build_drive_service(user.refresh_token)
+            if credentials is not None:
+                service = build_drive_service_from_credentials(credentials)
+            else:
+                service = build_drive_service(user.plaintext_refresh_token)
             content = download_file(service, file_id)
             if attempt > 1:
                 logger.info(f"Downloaded file {file_id} on attempt {attempt}")

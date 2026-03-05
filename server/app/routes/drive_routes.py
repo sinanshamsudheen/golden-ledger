@@ -1,8 +1,10 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from ..database import get_db
 from ..models.user import User
@@ -12,6 +14,7 @@ from ..utils.auth import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/drive", tags=["drive"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 class FolderConfigRequest(BaseModel):
@@ -19,7 +22,9 @@ class FolderConfigRequest(BaseModel):
 
 
 @router.post("/folder")
+@limiter.limit("30/minute")
 def configure_folder(
+    request: Request,
     body: FolderConfigRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -41,7 +46,7 @@ def configure_folder(
     folder_id = extract_folder_id_from_url(body.folder_path)
     if not folder_id:
         try:
-            service = build_drive_service(current_user.refresh_token)
+            service = build_drive_service(current_user.plaintext_refresh_token)
             folder_id = resolve_folder_id(service, body.folder_path)
         except Exception as exc:
             logger.error(f"Drive API error for user {current_user.id}: {exc}")

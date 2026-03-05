@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
-from sqlalchemy import String, Text, DateTime, Integer, ForeignKey
+from sqlalchemy import String, Text, DateTime, Integer, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, expression
 from ..database import Base
 
 if TYPE_CHECKING:
@@ -39,3 +39,26 @@ class Document(Base):
 
     user: Mapped["User"] = relationship("User", back_populates="documents")
     deal: Mapped[Optional["Deal"]] = relationship("Deal", back_populates="documents")
+
+    __table_args__ = (
+        # user_id alone — prerequisite for every user-scoped query
+        Index("ix_documents_user_id", "user_id"),
+        # (user_id, status) — all_documents / get_latest_documents_per_type
+        Index("ix_documents_user_status", "user_id", "status"),
+        # (user_id, checksum) partial — bulk dedup check in get_unprocessed_files
+        Index(
+            "ix_documents_user_checksum",
+            "user_id", "checksum",
+            postgresql_where=expression.text("checksum IS NOT NULL"),
+        ),
+        # (deal_id, doc_type) partial — deal-scoped GROUP BY in get_latest_documents_per_type
+        Index(
+            "ix_documents_deal_type",
+            "deal_id", "doc_type",
+            postgresql_where=expression.text("deal_id IS NOT NULL"),
+        ),
+        # (user_id, folder_path, doc_type) — dealless GROUP BY + Pass B superseded filter
+        Index("ix_documents_user_folder_type", "user_id", "folder_path", "doc_type"),
+        # (user_id, doc_type, version_status) — _mark_superseded_versions WHERE version_status='current'
+        Index("ix_documents_user_type_version", "user_id", "doc_type", "version_status"),
+    )

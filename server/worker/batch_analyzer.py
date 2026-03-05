@@ -146,22 +146,160 @@ def _build_prompt(chunk: list[dict]) -> str:
         sections.append(
             f'--- {item["custom_id"]}: {item["file_name"]}{location} ---\n{excerpt}'
         )
-
     docs_block = "\n\n".join(sections)
-    return (
-        f"Analyze the investment documents below and return a JSON object that EXACTLY matches "
-        f"the following output schema — one entry in \"results\" per document, in the same order:\n"
-        f"{OUTPUT_SCHEMA}\n"
-        f"Rules:\n"
-        f"  • custom_id must match exactly what is shown in the document header.\n"
-        f"  • doc_type must be one of: {', '.join(VALID_TYPES)}\n"
-        f"  • deal_name: extract from document content (max 3 words). Use [folder] as context. null if unknown.\n"
-        f"  • doc_date: date the document was authored (YYYY-MM-DD). null if not found.\n"
-        f"  • summary: exactly two sentences describing the document.\n"
-        f"  • Do NOT include any text outside the JSON object.\n\n"
-        f"Documents:\n\n"
-        f"{docs_block}"
-    )
+    valid_types_str = " | ".join(sorted(VALID_TYPES))
+
+    prompt = f"""\
+You are a senior financial analyst at a venture capital firm specializing in deal document intelligence.
+
+PRIMARY OBJECTIVE: Analyze a batch of investment documents and extract structured metadata \
+for each one — doc_type, deal_name, doc_date, and a two-sentence summary.
+
+## PART 1: OUTPUT SCHEMA
+
+Return a single JSON object with one entry in `results` per document, \
+in the same order as the input.
+
+{OUTPUT_SCHEMA.strip()}
+
+## PART 2: FIELD RULES
+
+### `custom_id`
+- Copy exactly from the document header: `--- <custom_id>: filename ---`
+- Do not modify, truncate, or infer.
+
+### `doc_type`
+Apply in strict order (stop at the first match):
+
+[T1] MEETING MINUTES
+- Contains: attendees list, agenda, action items, resolutions, board discussion, "resolved", "discussed"
+→ `meeting_minutes`
+
+[T2] PRESCREENING REPORT
+- Contains: initial assessment, first look, deal screening, opportunity overview, \
+"next steps: schedule partner meeting", fund thesis fit
+→ `prescreening_report`
+
+[T3] INVESTMENT MEMO
+- Contains: financial analysis, due diligence, term sheet, investment recommendation, \
+ARR/MRR, unit economics, LTV/CAC, burn rate, cap table, deal memo
+→ `investment_memo`
+
+[T4] PITCH DECK
+- Contains: company overview, funding ask, go-to-market, product pitch, \
+market size, founding team, use of proceeds
+→ `pitch_deck`
+
+DEFAULT: If none match → `pitch_deck`
+
+Must be exactly one of: `{valid_types_str}`
+
+### `deal_name`
+- Extract from **document content first** — folder path is supporting context only.
+- Return the shortest unambiguous name (max 3 words). Strip legal suffixes (Inc, Ltd, LLC, Corp).
+- Return `null` if the deal name cannot be determined with confidence.
+
+### `doc_date`
+- Find the date the document was **authored or published** — not dates referenced in the body.
+- Scan: `Date:` headers, title pages, opening paragraph, footers.
+- Normalize any format to `YYYY-MM-DD` (e.g. "April 4th, 2024" → "2024-04-04").
+- Return `null` **only** if no date appears anywhere in the text.
+
+### `summary`
+- Exactly **two sentences**.
+- Sentence 1: what the document is and who/what it concerns.
+- Sentence 2: the single most important insight, metric, decision, or next step.
+- Be specific — include numbers, names, outcomes where available.
+- Do not begin with "This document".
+
+## PART 3: DOCUMENTS TO ANALYZE
+
+{docs_block}
+
+## FEW-SHOT EXAMPLES
+
+### Ex 1: Pitch Deck — explicit date header
+**Input excerpt**:
+Date: 2023-09-26
+Acme Robotics - Series A Investor Presentation
+We are building autonomous warehouse robots...
+
+**Output entry**:
+{{
+  "custom_id": "abc123",
+  "doc_type": "pitch_deck",
+  "deal_name": "Acme Robotics",
+  "doc_date": "2023-09-26",
+  "summary": "Acme Robotics is seeking Series A funding to scale its autonomous warehouse robotics platform. The deck covers market opportunity, product overview, and financial projections."
+}}
+
+### Ex 2: Meeting Minutes — attendee list, natural-language date
+**Input excerpt**:
+Board Minutes - Beta Health Quarterly Review
+Date: October 2, 2023
+Attendees: David Park (Chair), Emily Watson, Robert Kim
+Agenda: Q3 performance, hiring, fundraising update
+
+**Output entry**:
+{{
+  "custom_id": "def456",
+  "doc_type": "meeting_minutes",
+  "deal_name": "Beta Health",
+  "doc_date": "2023-10-02",
+  "summary": "Quarterly board review for Beta Health covering Q3 performance and hiring progress. The board discussed fundraising status and approved action items for the coming quarter."
+}}
+
+### Ex 3: Investment Memo — no explicit deal name in body, folder as fallback
+**Input excerpt** [folder: Portfolio/Gamma Fintech/]:
+Financial Summary
+Total ARR: $2.8M as of Q4 2024. Gross Margin: 76%. Monthly Burn: $180K.
+
+**Output entry**:
+{{
+  "custom_id": "ghi789",
+  "doc_type": "investment_memo",
+  "deal_name": "Gamma Fintech",
+  "doc_date": null,
+  "summary": "Financial summary for Gamma Fintech reporting $2.8M ARR with 76% gross margin and $180K monthly burn. The document highlights improving unit economics and an 18-month cash runway."
+}}
+
+### Ex 4: Prescreening Report — date in natural language, no folder context
+**Input excerpt**:
+Initial Assessment: Zeta Energy
+Date: April 4th, 2024
+This first look covers Zeta Energy, a clean energy startup seeking seed funding...
+
+**Output entry**:
+{{
+  "custom_id": "jkl012",
+  "doc_type": "prescreening_report",
+  "deal_name": "Zeta Energy",
+  "doc_date": "2024-04-04",
+  "summary": "Initial prescreening assessment of Zeta Energy, a clean energy startup seeking seed investment. The report finds no major red flags and recommends scheduling a partner meeting."
+}}
+
+### Ex 5: Ambiguous doc — reasoning through type signals
+**Input excerpt**:
+Due Diligence Checklist - Gamma Fintech
+Corporate Documents: Certificate of incorporation, cap table, board consents...
+Financial Information: Historical financials, budget, tax returns, debt schedules...
+
+**Output entry**:
+{{
+  "custom_id": "mno345",
+  "doc_type": "investment_memo",
+  "deal_name": "Gamma Fintech",
+  "doc_date": null,
+  "summary": "Due diligence checklist for the Gamma Fintech transaction outlining required corporate and financial documentation. The document requests cap table, historical financials, IP portfolio, and legal compliance records by end of week."
+}}
+**Why**: Contains "due diligence", "cap table", "debt schedules" → matches [T3] investment_memo before reaching [T4].
+
+---
+
+Respond with the JSON object only. No prose, no markdown fences, no commentary outside the JSON.
+"""
+
+    return prompt
 
 
 def _parse_response(raw: str, chunk: list[dict]) -> list[AnalysisResult]:
@@ -223,12 +361,36 @@ def _parse_response(raw: str, chunk: list[dict]) -> list[AnalysisResult]:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _parse_date(raw: Optional[str]) -> Optional[datetime]:
+    """Parse a date string returned by the LLM into a datetime.
+
+    The LLM is instructed to return YYYY-MM-DD but may occasionally return
+    other formats. Try a broad set of patterns before giving up.
+    """
     if not raw:
         return None
-    try:
-        return datetime.strptime(raw.strip(), "%Y-%m-%d")
-    except (ValueError, AttributeError):
-        return None
+    value = raw.strip()
+    _FORMATS = [
+        "%Y-%m-%d",       # 2024-03-15  (primary — LLM instructed)
+        "%d-%m-%Y",       # 15-03-2024
+        "%m/%d/%Y",       # 03/15/2024
+        "%d/%m/%Y",       # 15/03/2024
+        "%Y/%m/%d",       # 2024/03/15
+        "%B %d, %Y",      # March 15, 2024
+        "%b %d, %Y",      # Mar 15, 2024
+        "%d %B %Y",       # 15 March 2024
+        "%d %b %Y",       # 15 Mar 2024
+        "%B %Y",          # March 2024  → treated as 1st of month
+        "%b %Y",          # Mar 2024
+        "%Y-%m",          # 2024-03
+        "%Y",             # 2024        → treated as Jan 1
+    ]
+    for fmt in _FORMATS:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    logger.warning(f"Could not parse doc_date '{value}' with any known format")
+    return None
 
 
 def _fallback_result(item: dict) -> AnalysisResult:

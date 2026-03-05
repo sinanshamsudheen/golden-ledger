@@ -45,14 +45,20 @@ def update_document(db: Session, document_id: int, **kwargs) -> Optional[Documen
 
 def get_latest_documents_per_type(db: Session, user_id: int) -> List[Document]:
     """
-    Return the most recent document per doc_type for a given user.
+    Return the most recent document per (deal_id, doc_type) for a given user.
 
-    Uses a subquery that selects the maximum drive_created_time per doc_type,
-    then joins back to retrieve the full document rows.
+    Groups by deal so each deal's latest pitch_deck, investment_memo etc. is
+    returned independently — not just the single globally newest per type.
+
+    Dealless documents (deal_id IS NULL) are grouped by (folder_path, doc_type)
+    so misc/ files also contribute their latest version.
+
     Only includes documents with status 'processed' or 'vectorized'.
     """
-    subquery = (
+    # ── Deal-scoped: latest per (deal_id, doc_type) ───────────────────────────
+    deal_subq = (
         db.query(
+            Document.deal_id,
             Document.doc_type,
             func.max(Document.drive_created_time).label("max_date"),
         )
@@ -60,19 +66,51 @@ def get_latest_documents_per_type(db: Session, user_id: int) -> List[Document]:
             Document.user_id == user_id,
             Document.status.in_(["processed", "vectorized"]),
             Document.doc_type.isnot(None),
+            Document.deal_id.isnot(None),
         )
-        .group_by(Document.doc_type)
+        .group_by(Document.deal_id, Document.doc_type)
         .subquery()
     )
 
-    documents = (
+    deal_docs = (
         db.query(Document)
         .join(
-            subquery,
-            (Document.doc_type == subquery.c.doc_type)
-            & (Document.drive_created_time == subquery.c.max_date),
+            deal_subq,
+            (Document.deal_id == deal_subq.c.deal_id)
+            & (Document.doc_type == deal_subq.c.doc_type)
+            & (Document.drive_created_time == deal_subq.c.max_date),
         )
         .filter(Document.user_id == user_id)
         .all()
     )
-    return documents
+
+    # ── Dealless: latest per (folder_path, doc_type) ──────────────────────────
+    folder_subq = (
+        db.query(
+            Document.folder_path,
+            Document.doc_type,
+            func.max(Document.drive_created_time).label("max_date"),
+        )
+        .filter(
+            Document.user_id == user_id,
+            Document.status.in_(["processed", "vectorized"]),
+            Document.doc_type.isnot(None),
+            Document.deal_id.is_(None),
+        )
+        .group_by(Document.folder_path, Document.doc_type)
+        .subquery()
+    )
+
+    folder_docs = (
+        db.query(Document)
+        .join(
+            folder_subq,
+            (Document.folder_path == folder_subq.c.folder_path)
+            & (Document.doc_type == folder_subq.c.doc_type)
+            & (Document.drive_created_time == folder_subq.c.max_date),
+        )
+        .filter(Document.user_id == user_id, Document.deal_id.is_(None))
+        .all()
+    )
+
+    return deal_docs + folder_docs

@@ -1,37 +1,48 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from ..database import get_db
 from ..models.user import User
 from ..services import google_auth_service
-from ..utils.auth import create_access_token, get_current_user
+from ..utils.auth import create_access_token, create_refresh_token, verify_refresh_token, get_current_user
+from ..utils.encryption import encrypt
 from ..config import settings
 from ..schemas.user_schema import UserResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+limiter = Limiter(key_func=get_remote_address)
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 
 @router.get("/login")
-def login():
+@limiter.limit("20/minute")
+def login(request: Request):
     """Redirect the user to the Google OAuth 2.0 consent screen."""
     auth_url, _state = google_auth_service.get_authorization_url()
     return RedirectResponse(url=auth_url)
 
 
 @router.get("/callback")
-def oauth_callback(code: str, state: str = "", db: Session = Depends(get_db)):
+@limiter.limit("20/minute")
+def oauth_callback(request: Request, code: str, state: str = "", db: Session = Depends(get_db)):
     """
     Handle the Google OAuth callback.
 
     1. Exchange authorization code for tokens.
     2. Fetch user email from Google.
-    3. Upsert user record (create or update refresh token).
-    4. Issue a JWT and redirect to the frontend.
+    3. Upsert user record — Google refresh token is encrypted before storage.
+    4. Issue a JWT access token (24 h) + refresh token (7 d) and redirect.
     """
     try:
         tokens = google_auth_service.exchange_code_for_tokens(code)
@@ -40,7 +51,7 @@ def oauth_callback(code: str, state: str = "", db: Session = Depends(get_db)):
         return RedirectResponse(url=f"{settings.FRONTEND_URL}?error=oauth_failed")
 
     access_token = tokens.get("access_token")
-    refresh_token = tokens.get("refresh_token")
+    google_refresh_token = tokens.get("refresh_token")
 
     email = google_auth_service.get_user_email(access_token)
     if not email:
@@ -48,19 +59,47 @@ def oauth_callback(code: str, state: str = "", db: Session = Depends(get_db)):
 
     user = db.query(User).filter(User.email == email).first()
     if user:
-        # Update refresh token only when Google issues a new one
-        if refresh_token:
-            user.refresh_token = refresh_token
+        # Update only when Google issues a new refresh token (not on every login)
+        if google_refresh_token:
+            user.refresh_token = encrypt(google_refresh_token)
     else:
-        user = User(email=email, refresh_token=refresh_token)
+        user = User(
+            email=email,
+            refresh_token=encrypt(google_refresh_token) if google_refresh_token else None,
+        )
         db.add(user)
 
     db.commit()
     db.refresh(user)
 
-    jwt_token = create_access_token(user.id)
-    redirect_url = f"{settings.FRONTEND_URL}?token={jwt_token}&email={email}"
+    jwt_access = create_access_token(user.id)
+    jwt_refresh = create_refresh_token(user.id)
+    redirect_url = (
+        f"{settings.FRONTEND_URL}"
+        f"?token={jwt_access}"
+        f"&refresh_token={jwt_refresh}"
+        f"&email={email}"
+    )
     return RedirectResponse(url=redirect_url)
+
+
+@router.post("/refresh")
+@limiter.limit("30/minute")
+def refresh_token(request: Request, body: RefreshRequest, db: Session = Depends(get_db)):
+    """
+    Exchange a valid refresh token for a new access + refresh token pair.
+
+    The refresh token rotates on every call (rolling 7-day window), so the
+    client must always store the latest pair returned by this endpoint.
+    """
+    user_id = verify_refresh_token(body.refresh_token)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return {
+        "access_token": create_access_token(user.id),
+        "refresh_token": create_refresh_token(user.id),
+    }
 
 
 @router.get("/me", response_model=UserResponse)

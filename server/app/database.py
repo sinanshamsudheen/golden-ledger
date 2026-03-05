@@ -6,7 +6,11 @@ from .config import settings
 
 engine = create_engine(
     settings.DATABASE_URL,
-    pool_pre_ping=True,
+    pool_pre_ping=True,       # test connections before handing to a request
+    pool_size=10,             # keep 10 connections open at steady state
+    max_overflow=20,          # allow up to 20 extra under burst load
+    pool_recycle=1800,        # recycle connections after 30 min (avoids stale TCP)
+    pool_timeout=30,          # raise after 30 s if no connection is available
 )
 
 SessionLocal = sessionmaker(

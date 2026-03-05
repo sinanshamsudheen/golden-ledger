@@ -26,6 +26,7 @@ show_usage() {
     echo "Options:"
     echo "  --setup-db    Create database and extensions"
     echo "  --migrate     Run Alembic migrations (alembic upgrade head)"
+    echo "  --clear-data  Delete all deals & documents, keep auth data  ⚠"
     echo "  --drop-db     Drop the database  ⚠  DESTRUCTIVE"
     echo "  --reset-db    Drop + recreate + migrate  ⚠  DESTRUCTIVE"
     echo "  --help, -h    Show this help"
@@ -160,6 +161,13 @@ reset_database() {
     print_success "Database reset complete"
 }
 
+clear_deal_data() {
+    print_status "Clearing documents and deals from '$DB_NAME' (auth data preserved) ..."
+    PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+        -c "TRUNCATE TABLE documents, deals RESTART IDENTITY CASCADE;"
+    print_success "documents and deals cleared — users table untouched"
+}
+
 # ── Interactive mode ──────────────────────────────────────────────────────────
 
 main_interactive() {
@@ -176,11 +184,12 @@ main_interactive() {
     echo "  1) Setup database (create + extensions)"
     echo "  2) Run migrations"
     echo "  3) Setup database AND run migrations  ← recommended first-time"
-    echo "  4) Drop database  ⚠"
-    echo "  5) Reset database (drop + recreate + migrate)  ⚠"
-    echo "  6) Exit"
+    echo "  4) Clear deals & documents (keep auth data)  ⚠"
+    echo "  5) Drop database  ⚠"
+    echo "  6) Reset database (drop + recreate + migrate)  ⚠"
+    echo "  7) Exit"
     echo
-    read -rp "Choice (1-6): " choice
+    read -rp "Choice (1-7): " choice
     echo
 
     case $choice in
@@ -188,16 +197,21 @@ main_interactive() {
         2) run_migrations ;;
         3) setup_database && run_migrations ;;
         4)
+            print_warning "This deletes all deals and documents in '$DB_NAME'. Users are preserved."
+            read -rp "Type 'yes' to confirm: " confirm
+            [ "$confirm" = "yes" ] && clear_deal_data || print_status "Cancelled"
+            ;;
+        5)
             print_warning "This permanently deletes '$DB_NAME'."
             read -rp "Type 'yes' to confirm: " confirm
             [ "$confirm" = "yes" ] && drop_database || print_status "Cancelled"
             ;;
-        5)
+        6)
             print_warning "This permanently deletes and recreates '$DB_NAME'."
             read -rp "Type 'yes' to confirm: " confirm
             [ "$confirm" = "yes" ] && reset_database && run_migrations || print_status "Cancelled"
             ;;
-        6) print_status "Bye!"; exit 0 ;;
+        7) print_status "Bye!"; exit 0 ;;
         *) print_error "Invalid choice"; exit 1 ;;
     esac
 
@@ -213,6 +227,12 @@ case "${1:-interactive}" in
         load_env_vars; check_postgres; setup_database ;;
     "--migrate")
         load_env_vars; run_migrations ;;
+    "--clear-data")
+        load_env_vars; check_postgres
+        print_warning "This deletes all deals and documents in '$DB_NAME'. Users are preserved."
+        read -rp "Type 'yes' to confirm: " confirm
+        [ "$confirm" = "yes" ] && clear_deal_data || print_status "Cancelled"
+        ;;
     "--drop-db")
         load_env_vars; check_postgres
         print_warning "This permanently deletes '$DB_NAME'."

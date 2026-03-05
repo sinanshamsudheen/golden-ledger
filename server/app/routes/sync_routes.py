@@ -1,6 +1,8 @@
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -11,10 +13,13 @@ from ..utils.auth import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sync", tags=["sync"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.get("/status")
+@limiter.limit("60/minute")
 def sync_status(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

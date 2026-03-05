@@ -1,7 +1,13 @@
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 from .config import settings
 from .routes import auth_routes, drive_routes, document_routes, sync_routes
@@ -13,11 +19,32 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# ── Rate limiter ──────────────────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+
+# ── Body size limit ───────────────────────────────────────────────────────────
+_MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject requests whose Content-Length exceeds _MAX_BODY_BYTES with HTTP 413."""
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > _MAX_BODY_BYTES:
+            return Response("Request body too large", status_code=413)
+        return await call_next(request)
+
+
 app = FastAPI(
     title="Golden Ledger API",
     description="Investment Document Intelligence – Onboarding Pipeline (POC)",
     version="0.1.0",
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(_BodySizeLimitMiddleware)
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # Allow the Vite dev server and any configured frontend origin.

@@ -1,8 +1,10 @@
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from ..database import get_db
 from ..models.user import User
@@ -22,6 +24,7 @@ from ..utils.auth import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+limiter = Limiter(key_func=get_remote_address)
 
 _DOC_TYPES = ["pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes"]
 
@@ -31,7 +34,9 @@ def _fmt_date(dt) -> str | None:
 
 
 @router.get("/latest", response_model=List[LatestDocumentResponse])
+@limiter.limit("60/minute")
 def latest_documents(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> List[LatestDocumentResponse]:
@@ -49,7 +54,9 @@ def latest_documents(
 
 
 @router.get("/all", response_model=List[AllDocumentResponse])
+@limiter.limit("60/minute")
 def all_documents(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> List[AllDocumentResponse]:
@@ -82,7 +89,9 @@ def all_documents(
 
 
 @router.get("/deals", response_model=List[DealResponse])
+@limiter.limit("60/minute")
 def list_deals(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> List[DealResponse]:
@@ -163,8 +172,10 @@ def list_deals(
 
 
 @router.get("/deals/{deal_id}", response_model=DealResponse)
+@limiter.limit("60/minute")
 def get_deal(
     deal_id: int,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DealResponse:
