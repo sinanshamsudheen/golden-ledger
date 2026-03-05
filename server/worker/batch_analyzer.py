@@ -187,7 +187,7 @@ Signals → `true` (existing client/portfolio):
 Signals → `false` (new deal / opportunity being evaluated):
 - Fundraising ask, pitch deck, term sheet, or investment memo for evaluation
 - Prescreening or first-look of a company seeking capital
-- IC meeting minutes discussing *whether* to invest in a new company
+- IC meeting minutes discussing *whether* to invest in a new company (formal committee session, not a call recap)
 - Data room materials from an external company seeking investment
 
 **When in doubt, default to `false`** (assume deal/opportunity).
@@ -195,8 +195,18 @@ Signals → `false` (new deal / opportunity being evaluated):
 ### `doc_type`
 Apply in strict order (stop at the first match):
 
-[T1] MEETING MINUTES
-- Contains: attendees list, agenda, action items, resolutions, board discussion, "resolved", "discussed"
+[T1] MEETING MINUTES — IC/Investment Committee only
+- MUST be a formal Investment Committee (IC) session where a deal is deliberated or voted on.
+- Strong signals: "Investment Committee", "IC minutes", "IC meeting", "committee resolution",
+  "investment approved", "investment rejected", "proceed with investment", "pass on deal",
+  "IC recommendation", "voted to invest", "motion carried", "quorum"
+- The document must record a formal DECISION process — not just discussion or an update.
+
+EXCLUDE from `meeting_minutes` — classify as `other` instead:
+- Call notes, call recap, catch-up notes, intro call, exploratory call, reference call
+- Due diligence calls, DD call notes, founder call notes
+- Board updates, management updates, LP updates, quarterly/annual reviews
+- Any meeting that is informational or operational (no investment vote/resolution)
 → `meeting_minutes`
 
 [T2] PRESCREENING REPORT
@@ -257,12 +267,15 @@ We are building autonomous warehouse robots...
   "summary": "Acme Robotics is seeking Series A funding to scale its autonomous warehouse robotics platform. The deck covers market opportunity, product overview, and financial projections."
 }}
 
-### Ex 2: Meeting Minutes — attendee list, natural-language date
+### Ex 2: IC Meeting Minutes — formal investment committee session
 **Input excerpt**:
-Board Minutes - Beta Health Quarterly Review
+Investment Committee Meeting Minutes
 Date: October 2, 2023
-Attendees: David Park (Chair), Emily Watson, Robert Kim
-Agenda: Q3 performance, hiring, fundraising update
+Attendees: David Park (Managing Partner, Chair), Emily Watson (Partner), Robert Kim (Associate)
+Agenda: IC vote on Beta Health Series A investment
+Discussion: Committee reviewed prescreening report and investment memo. Emily raised concerns about customer concentration risk. David noted strong ARR growth of 180% YoY. Motion to proceed with $3M lead investment at $22M cap.
+Resolution: Carried unanimously. Proceed to term sheet.
+Action items: Legal to prepare term sheet by Oct 9.
 
 **Output entry**:
 {{
@@ -270,8 +283,9 @@ Agenda: Q3 performance, hiring, fundraising update
   "doc_type": "meeting_minutes",
   "deal_name": "Beta Health",
   "doc_date": "2023-10-02",
-  "summary": "Quarterly board review for Beta Health covering Q3 performance and hiring progress. The board discussed fundraising status and approved action items for the coming quarter."
+  "summary": "Investment Committee minutes for the Beta Health Series A vote, chaired by David Park with Emily Watson and Robert Kim in attendance. The committee unanimously approved a $3M lead investment at a $22M cap, with a term sheet to be issued by October 9."
 }}
+**Why**: Explicit "Investment Committee", "motion", "resolution", "carried unanimously" — formal IC decision session, not a call recap or board update.
 
 ### Ex 3: Investment Memo — no explicit deal name in body, folder as fallback
 **Input excerpt** [folder: Portfolio/Gamma Fintech/]:
@@ -318,9 +332,26 @@ Financial Information: Historical financials, budget, tax returns, debt schedule
 }}
 **Why**: Contains "due diligence", "cap table", "debt schedules" → matches [T3] investment_memo before reaching [T4].
 
----
+### Ex 6: Call notes — NOT meeting_minutes
+**Input excerpt**:
+Call Notes — Beta Health Intro Call
+Date: September 15, 2023
+Attendees: David Park (GP), Sarah Chen (CEO, Beta Health)
+Topics: Company overview, market opportunity, funding timeline
+Notes: Sarah walked through the pitch. Team of 8, $1.2M ARR, raising Series A at $18-22M cap.
+Next steps: Share data room access, follow-up call in two weeks.
 
-Respond with the JSON object only. No prose, no markdown fences, no commentary outside the JSON.
+**Output entry**:
+{{
+  "custom_id": "pqr678",
+  "doc_type": "other",
+  "deal_name": "Beta Health",
+  "doc_date": "2023-09-15",
+  "summary": "Introductory call notes between GP David Park and Beta Health CEO Sarah Chen covering company overview and Series A fundraising. Next steps include data room access and a follow-up call in two weeks."
+}}
+**Why**: "Call Notes", "intro call", "next steps: follow-up call" — this is a call recap, not a formal IC decision session. Must be `other`, never `meeting_minutes`.
+
+---
 """
 
     return prompt

@@ -294,89 +294,46 @@ _KEYWORDS: dict[str, list[str]] = {
     ],
 
     # ── Meeting Minutes ───────────────────────────────────────────────────────
-    # Covers board meetings, IC calls, portfolio reviews, investor updates
+    # ONLY Investment Committee (IC) meeting minutes — formal committee sessions
+    # where an investment decision is deliberated or voted on.
+    # Excludes: call notes, catch-up notes, introductory calls, GP/LP updates.
     "meeting_minutes": [
-        # explicit minutes language
+        # explicit IC/committee minutes language (strong positive signals)
+        "investment committee minutes",
+        "investment committee meeting",
+        "ic meeting minutes",
+        "ic minutes",
+        "ic decision",
+        "committee minutes",
+        "committee meeting minutes",
+        "minutes of the investment committee",
+        "minutes of investment committee",
+        "ic recommendation",
+        "ic approval",
+        "ic vote",
+        # formal minutes structure
         "meeting minutes",
         "minutes of meeting",
         "minutes of the meeting",
-        "board minutes",
-        "board meeting minutes",
-        "ic minutes",
-        "investment committee minutes",
-        "committee minutes",
-        "meeting notes",
-        "call notes",
-        "call recap",
-        "meeting recap",
-        "meeting summary",
-        "session notes",
-        # structural signals
-        "attendees",
-        "in attendance",
-        "present:",
-        "participants:",
-        "quorum",
-        "called to order",
-        "agenda",
-        "agenda items",
-        "agenda item",
-        "discussed",
-        "discussion",
-        "noted",
+        # deliberation / voting signals — only meaningful alongside IC context
         "resolved",
         "resolution",
         "motion",
         "seconded",
         "voted",
-        "approved",
-        "tabled",
-        "deferred",
         "carried unanimously",
-        "action items",
-        "action item",
-        "follow-up items",
-        "follow-up actions",
-        "next steps",
-        "owner",
-        "due date",
-        "accountable",
-        # board/governance context
-        "board of directors",
-        "board members",
-        "board observer",
-        "observer",
-        "independent director",
-        "chairperson",
-        "chair",
-        "ceo update",
-        "cfo update",
-        "coo update",
-        "management update",
-        "quarterly review",
-        "quarterly update",
-        "q1 review",
-        "q2 review",
-        "q3 review",
-        "q4 review",
-        "annual review",
-        "portfolio review",
-        "investor update",
-        "lp update",
-        # typical minute content
-        "cash runway",
-        "hiring update",
-        "product update",
-        "sales update",
-        "fundraising update",
-        "financing update",
-        "operating plan",
-        "budget approved",
-        "compensation",
-        "equity grant",
-        "option grant",
-        "stock option",
-        "409a",
+        "quorum",
+        "called to order",
+        # IC-specific deal language
+        "deal recommendation",
+        "investment recommendation",
+        "investment decision",
+        "approval to invest",
+        "proceed with investment",
+        "pass on",
+        "decline to invest",
+        "investment approved",
+        "investment rejected",
     ],
 }
 
@@ -384,6 +341,33 @@ _KEYWORDS: dict[str, list[str]] = {
 # so _parse_response in batch_analyzer doesn't coerce it back to _FALLBACK_TYPE.
 VALID_TYPES = set(_KEYWORDS.keys()) | {"other"}
 _CONFIDENCE_THRESHOLD = 3  # minimum keyword hits to trust the heuristic (raised from 2 — larger dictionaries need higher bar to avoid false positives)
+
+# Keywords that, if present, disqualify a document from being meeting_minutes
+# regardless of how many positive signals matched.  These indicate generic call
+# notes, catch-up notes, or intro calls — not IC deliberation sessions.
+_MEETING_EXCLUSION_KEYWORDS = [
+    "call notes",
+    "call recap",
+    "catch-up",
+    "catch up notes",
+    "intro call",
+    "introductory call",
+    "exploratory call",
+    "due diligence call",
+    "reference call",
+    "dd call",
+    "first call",
+    "follow-up call",
+    "lp call",
+    "lp update",
+    "investor update",
+    "portfolio update",
+    "board update",
+    "management update",
+    "quarterly update",
+    "quarterly review",
+    "annual review",
+]
 
 
 # ── Public interface ──────────────────────────────────────────────────────────
@@ -398,6 +382,17 @@ def classify_document(text: str, file_name: str = "") -> tuple[str, bool]:
     """
     haystack = (text[:3000] + " " + file_name).lower()
     scores = {doc_type: _count_hits(haystack, kws) for doc_type, kws in _KEYWORDS.items()}
+
+    # If the top scorer is meeting_minutes but the document contains exclusion
+    # signals (call notes, catch-up, LP update, etc.) → demote to low-confidence
+    # so the LLM makes the final call.
+    if scores.get("meeting_minutes", 0) >= _CONFIDENCE_THRESHOLD:
+        if any(kw in haystack for kw in _MEETING_EXCLUSION_KEYWORDS):
+            logger.info(
+                f"'{file_name}' matched meeting_minutes keywords but also matched "
+                "exclusion signals (call notes / non-IC) — deferring to LLM"
+            )
+            scores["meeting_minutes"] = _CONFIDENCE_THRESHOLD - 1  # force low-confidence
 
     best_type = max(scores, key=lambda t: scores[t])
     best_score = scores[best_type]
