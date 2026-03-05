@@ -19,6 +19,7 @@ from ..schemas.document_schema import (
     DealDocSlot,
     ArchivedDoc,
     LockedFileDoc,
+    LockedFileWithDeal,
 )
 from ..utils.auth import get_current_user
 
@@ -276,3 +277,45 @@ def get_deal(
         deal_reason=deal.deal_reason,
         locked_files=locked,
     )
+
+
+@router.get("/locked", response_model=List[LockedFileWithDeal])
+@limiter.limit("60/minute")
+def locked_files(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> List[LockedFileWithDeal]:
+    """Return all password-protected files for the current user, enriched with deal name."""
+    docs = (
+        db.query(Document)
+        .filter(
+            Document.user_id == current_user.id,
+            Document.doc_type == "password_protected",
+        )
+        .order_by(Document.id)
+        .all()
+    )
+
+    # Deduplicate by file_id (same file can appear in multiple sub-folders)
+    seen: set[str] = set()
+    result: list[LockedFileWithDeal] = []
+    for doc in docs:
+        if doc.file_id in seen:
+            continue
+        seen.add(doc.file_id)
+        deal_name: str | None = None
+        if doc.deal_id:
+            deal = db.query(Deal).filter(Deal.id == doc.deal_id).first()
+            deal_name = deal.name if deal else None
+        result.append(
+            LockedFileWithDeal(
+                id=doc.id,
+                file_id=doc.file_id,
+                name=doc.file_name,
+                date=_fmt_date(doc.doc_created_date),
+                deal_id=doc.deal_id,
+                deal_name=deal_name,
+            )
+        )
+    return result

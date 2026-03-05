@@ -42,6 +42,7 @@ OUTPUT_SCHEMA = """
   "results": [
     {
       "custom_id": "<exact custom_id from input>",
+      "is_client": "<true if existing portfolio/client file, false if new deal/opportunity being evaluated>",
       "doc_type": "<one of: pitch_deck | investment_memo | prescreening_report | meeting_minutes | other>",
       "deal_name": "<company or deal name, max 3 words, or null>",
       "doc_date": "<YYYY-MM-DD or null>",
@@ -59,6 +60,7 @@ class AnalysisResult:
     deal_name: Optional[str] = None
     doc_date: Optional[datetime] = None
     summary: Optional[str] = None
+    is_client: bool = False
     from_heuristic: bool = False
 
 
@@ -171,6 +173,24 @@ in the same order as the input.
 ### `custom_id`
 - Copy exactly from the document header: `--- <custom_id>: filename ---`
 - Do not modify, truncate, or infer.
+
+### `is_client`
+Set to `true` if this document belongs to an **existing portfolio company / current client** \
+(a company the fund already manages or has already invested in), NOT a new deal being evaluated.
+
+Signals → `true` (existing client/portfolio):
+- Quarterly/annual report, board update, or investor update *from* a portfolio company
+- Folder path contains words like "Portfolio", "Clients", "Current Investments", "Post-Investment", "Active"
+- Operational report, cap table update, or company financials sent *to* investors (no fundraising ask)
+- Governance documents, AGM minutes, or shareholder letters for an already-invested company
+
+Signals → `false` (new deal / opportunity being evaluated):
+- Fundraising ask, pitch deck, term sheet, or investment memo for evaluation
+- Prescreening or first-look of a company seeking capital
+- IC meeting minutes discussing *whether* to invest in a new company
+- Data room materials from an external company seeking investment
+
+**When in doubt, default to `false`** (assume deal/opportunity).
 
 ### `doc_type`
 Apply in strict order (stop at the first match):
@@ -339,6 +359,8 @@ def _parse_response(raw: str, chunk: list[dict]) -> list[AnalysisResult]:
         if doc_type not in VALID_TYPES:
             doc_type = _FALLBACK_TYPE
 
+        is_client = bool(entry.get("is_client", False))
+
         deal_name = entry.get("deal_name") or None
         if deal_name:
             deal_name = deal_name.strip() or None
@@ -353,10 +375,11 @@ def _parse_response(raw: str, chunk: list[dict]) -> list[AnalysisResult]:
                 deal_name=deal_name,
                 doc_date=doc_date,
                 summary=summary,
+                is_client=is_client,
             )
         )
         logger.info(
-            f"[batch] {item['file_name']}: type={doc_type} deal={deal_name} date={doc_date}"
+            f"[batch] {item['file_name']}: type={doc_type} deal={deal_name} date={doc_date} is_client={is_client}"
         )
 
     return results

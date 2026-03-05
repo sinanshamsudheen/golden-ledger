@@ -99,6 +99,17 @@ class LockedFileDoc(BaseModel):
     date: Optional[str] = None
 
 
+class LockedFileWithDeal(BaseModel):
+    """A password-protected file enriched with the deal it belongs to."""
+
+    id: int
+    file_id: str
+    name: str
+    date: Optional[str] = None
+    deal_id: Optional[int] = None
+    deal_name: Optional[str] = None
+
+
 class DealResponse(BaseModel):
     """Full deal with its current document slots, archive, and analytical results."""
 

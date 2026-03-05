@@ -320,6 +320,21 @@ def process_user(db, user: User) -> None:
                     doc_date = item["drive_created_time"]
                     description = text_summary(item["text"])
 
+                # Client/portfolio file: store tombstone so it's never re-downloaded,
+                # but exclude it from all deal processing and vectorization.
+                if fid in llm_results and llm_results[fid].is_client:
+                    update_document(
+                        db,
+                        document.id,
+                        doc_type="client",
+                        description=description,
+                        doc_created_date=doc_date,
+                        folder_path=folder_path or None,
+                        status="skipped",
+                    )
+                    logger.info(f"Skipped '{fname}' — identified as client/portfolio file")
+                    continue
+
                 # Unrelated documents: store a permanent tombstone so this
                 # file_id stays in known_ids and is never re-downloaded on
                 # any future run. These rows are invisible to all API queries

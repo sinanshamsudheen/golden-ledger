@@ -56,6 +56,15 @@ export interface LockedFileDoc {
   date: string | null;
 }
 
+export interface LockedFileWithDeal {
+  id: number;
+  file_id: string;
+  name: string;
+  date: string | null;
+  deal_id: number | null;
+  deal_name: string | null;
+}
+
 export interface DealResponse {
   id: number;
   name: string;
@@ -122,5 +131,9 @@ export const api = {
 
   getDeal(dealId: number): Promise<DealResponse> {
     return apiFetch(`/documents/deals/${dealId}`);
+  },
+
+  getLockedFiles(): Promise<LockedFileWithDeal[]> {
+    return apiFetch("/documents/locked");
   },
 };
