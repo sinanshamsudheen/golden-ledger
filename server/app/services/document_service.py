@@ -14,6 +14,14 @@ def get_document_by_file_id(db: Session, file_id: str) -> Optional[Document]:
     return db.query(Document).filter(Document.file_id == file_id).first()
 
 
+def get_document_by_checksum(db: Session, user_id: int, checksum: str) -> Optional[Document]:
+    return (
+        db.query(Document)
+        .filter(Document.user_id == user_id, Document.checksum == checksum)
+        .first()
+    )
+
+
 def create_document(db: Session, doc_data: DocumentCreate) -> Document:
     document = Document(**doc_data.model_dump())
     db.add(document)

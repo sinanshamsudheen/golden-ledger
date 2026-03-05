@@ -23,7 +23,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _RAPIDFUZZ_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _RAPIDFUZZ_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+# Minimum fuzzy similarity (0–100) to consider two deal names the same deal.
+# token_set_ratio handles word reordering and subset matches, e.g.:
+#   "Acme" vs "Acme Robotics"  → ~89
+#   "Beta Health" vs "Beta"    → ~86
+#   "Acme" vs "Zeta Energy"   → ~22
+FUZZY_THRESHOLD = 85
 
 # ── Generic folder names to ignore ───────────────────────────────────────────
 
@@ -90,6 +103,45 @@ def _normalize_key(name: str) -> str:
     return _NON_ALNUM.sub("", name)
 
 
+def _fuzzy_find_deal(db: Session, user_id: int, key: str, raw_name: str):
+    """
+    Scan all existing deals for this user and return the best fuzzy match
+    above FUZZY_THRESHOLD, or None if nothing is close enough.
+
+    Uses token_set_ratio which handles word reordering and subset matches:
+      "Acme"          vs "Acme Robotics"   → ~89  ✓ match
+      "Beta Health"   vs "Beta"            → ~86  ✓ match
+      "Acme Robotics" vs "Acme Inc"        → ~80  ✓ match (above threshold)
+      "Acme"          vs "Zeta Energy"     → ~22  ✗ no match
+    """
+    if not _RAPIDFUZZ_AVAILABLE:
+        return None
+
+    from app.models.deal import Deal
+
+    existing = db.query(Deal).filter(Deal.user_id == user_id).all()
+    if not existing:
+        return None
+
+    best_deal = None
+    best_score = 0
+
+    for deal in existing:
+        score = _fuzz.token_set_ratio(key, deal.name_key)
+        if score > best_score:
+            best_score = score
+            best_deal = deal
+
+    if best_score >= FUZZY_THRESHOLD:
+        logger.info(
+            f"Fuzzy match: '{raw_name}' → '{best_deal.name}' "
+            f"(score={best_score}, threshold={FUZZY_THRESHOLD})"
+        )
+        return best_deal
+
+    return None
+
+
 def get_or_create_deal(db: Session, user_id: int, raw_name: str):
     """
     Look up a Deal by normalized key for this user; create it if not found.
@@ -113,6 +165,11 @@ def get_or_create_deal(db: Session, user_id: int, raw_name: str):
     )
     if deal:
         return deal
+
+    # ── Fuzzy pass: catch near-duplicates before creating a new row ──────────
+    fuzzy_match = _fuzzy_find_deal(db, user_id, key, raw_name)
+    if fuzzy_match:
+        return fuzzy_match
 
     try:
         deal = Deal(user_id=user_id, name=display_name, name_key=key)

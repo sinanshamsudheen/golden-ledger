@@ -32,6 +32,21 @@ CHUNK_SIZE = 20          # docs per LLM call
 TEXT_LIMIT = 1500        # chars of text sent per doc to LLM
 _FALLBACK_TYPE = "pitch_deck"
 
+# ── Output schema (shown verbatim to the model) ───────────────────────────────
+OUTPUT_SCHEMA = """
+{
+  "results": [
+    {
+      "custom_id": "<exact custom_id from input>",
+      "doc_type": "<one of: pitch_deck | investment_report | deal_memo | financial_report | other>",
+      "deal_name": "<company or deal name, max 3 words, or null>",
+      "doc_date": "<YYYY-MM-DD or null>",
+      "summary": "<two sentence description of the document>"
+    }
+  ]
+}
+"""
+
 
 @dataclass
 class AnalysisResult:
@@ -92,22 +107,30 @@ def _analyze_chunk(chunk: list[dict], api_key: str) -> list[AnalysisResult]:
 
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
-            model="gpt-5",
+            model="gpt-4o",
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are a financial analyst. Analyze investment documents and "
-                        "return structured JSON only. No prose, no markdown."
+                        "You are a financial analyst assistant. "
+                        "You MUST respond with a single valid JSON object that strictly follows "
+                        "the output schema provided in the user message. "
+                        "No markdown, no code fences, no prose — raw JSON only."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
             response_format={"type": "json_object"},
-            max_tokens=100 * len(chunk),  # ~100 tokens per doc result
-            temperature=0,
+            max_completion_tokens=400 * len(chunk),  # ~400 tokens per doc result
         )
         raw = response.choices[0].message.content or ""
+        if not raw.strip():
+            logger.error(
+                f"Empty content from LLM for chunk of {len(chunk)} — "
+                f"finish_reason={response.choices[0].finish_reason}"
+            )
+            return [_fallback_result(item) for item in chunk]
+        logger.debug(f"LLM raw response (first 200 chars): {raw[:200]}")
         return _parse_response(raw, chunk)
     except Exception as exc:
         logger.error(f"Batch LLM call failed for chunk of {len(chunk)}: {exc}")
@@ -115,32 +138,40 @@ def _analyze_chunk(chunk: list[dict], api_key: str) -> list[AnalysisResult]:
 
 
 def _build_prompt(chunk: list[dict]) -> str:
-    doc_types = ", ".join(VALID_TYPES)
     sections = []
     for item in chunk:
         excerpt = item["text"][:TEXT_LIMIT].replace("---", "- -")
-        known = item.get("known_deal_name")
-        hint = f" [deal hint: {known}]" if known else ""
+        folder = item.get("folder_path", "").strip()
+        location = f" [folder: {folder}]" if folder else ""
         sections.append(
-            f'--- {item["custom_id"]}: {item["file_name"]}{hint} ---\n{excerpt}'
+            f'--- {item["custom_id"]}: {item["file_name"]}{location} ---\n{excerpt}'
         )
 
     docs_block = "\n\n".join(sections)
     return (
-        f'Analyze these investment documents. Return ONLY a JSON object with key "results" '
-        f"containing an array — one entry per document in the same order:\n"
-        f'{{"results": [{{"custom_id":"...","doc_type":"...","deal_name":"...or null",'
-        f'"doc_date":"YYYY-MM-DD or null","summary":"two sentence description"}},...]}}\n\n'
-        f"Valid doc_type values: {doc_types}\n"
-        f"For deal_name: if a [deal hint] is provided use it verbatim, otherwise extract "
-        f"the company/deal name (max 3 words) from the document, or null if unclear.\n\n"
+        f"Analyze the investment documents below and return a JSON object that EXACTLY matches "
+        f"the following output schema — one entry in \"results\" per document, in the same order:\n"
+        f"{OUTPUT_SCHEMA}\n"
+        f"Rules:\n"
+        f"  • custom_id must match exactly what is shown in the document header.\n"
+        f"  • doc_type must be one of: {', '.join(VALID_TYPES)}\n"
+        f"  • deal_name: extract from document content (max 3 words). Use [folder] as context. null if unknown.\n"
+        f"  • doc_date: date the document was authored (YYYY-MM-DD). null if not found.\n"
+        f"  • summary: exactly two sentences describing the document.\n"
+        f"  • Do NOT include any text outside the JSON object.\n\n"
+        f"Documents:\n\n"
         f"{docs_block}"
     )
 
 
 def _parse_response(raw: str, chunk: list[dict]) -> list[AnalysisResult]:
+    # Strip markdown code fences if model wraps the JSON
+    stripped = raw.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.split("\n", 1)[-1]
+        stripped = stripped.rsplit("```", 1)[0].strip()
     try:
-        data = json.loads(raw)
+        data = json.loads(stripped)
         entries = data.get("results", [])
         if not isinstance(entries, list):
             raise ValueError("'results' is not a list")

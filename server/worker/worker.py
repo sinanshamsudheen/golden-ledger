@@ -5,12 +5,12 @@ Pipeline (per user):
   1.  Fetch all users from the database
   2.  Skip users without Drive connected or folder configured
   3.  Identify new (unprocessed) files in the Drive folder (recursively)
-  4.  For each new file: download content + extract text
-  5.  Heuristic pre-filter: classify doc type + resolve deal from folder path
-  6.  Batch LLM analysis for docs that still need it (20 docs per call)
-  7.  Persist all documents (with deal_id) to the database
-  8.  Mark superseded versions within each deal
-  9.  Send latest docs per type to the vectorizer pipeline
+  4.  For each new file: download content + extract text (parallel)
+  5.  Batch LLM analysis — all docs in one pass (20 per call, parallel chunks)
+      folder_path is passed as a context hint so LLM can factor in location
+  6.  Persist all documents (with deal_id) to the database
+  7.  Mark superseded versions within each deal
+  8.  Send latest docs per type to the vectorizer pipeline
 
 Run manually:
     python server/worker/worker.py   (from project root)
@@ -22,10 +22,8 @@ Scheduled via cron:
 
 import logging
 import os
-import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 from typing import Optional
 
 # ── Path setup ────────────────────────────────────────────────────────────────
@@ -56,13 +54,9 @@ from worker.drive_ingestion import (
     parse_drive_created_time,
 )
 from worker.parser import extract_text
-from worker.classifier import classify_document
 from worker.batch_analyzer import analyze_batch, AnalysisResult
-from worker.summarizer import generate_description
-from worker.deal_resolver import (
-    extract_deal_from_folder_path,
-    get_or_create_deal,
-)
+from worker.summarizer import text_summary
+from worker.deal_resolver import get_or_create_deal
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -70,50 +64,6 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s – %(message)s",
 )
 logger = logging.getLogger("worker")
-
-
-# ── Date extraction ───────────────────────────────────────────────────────────
-
-def _extract_doc_date(text: str) -> Optional[datetime]:
-    """
-    Try to extract a document creation date from its text using regex patterns.
-    Handles 3 formats with dedicated parsers to avoid group-ordering bugs.
-    """
-    excerpt = text[:2000]
-
-    # Pattern 1: YYYY-MM-DD
-    m = re.search(r"\b(\d{4})[\/\-](\d{2})[\/\-](\d{2})\b", excerpt)
-    if m:
-        try:
-            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        except ValueError:
-            pass
-
-    # Pattern 2: Month DD, YYYY  (e.g. "March 4, 2026" or "Mar 4 2026")
-    m = re.search(
-        r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
-        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
-        r"[\s,]+(\d{1,2})[\s,]+(\d{4})\b",
-        excerpt,
-        re.IGNORECASE,
-    )
-    if m:
-        try:
-            return datetime.strptime(
-                f"{m.group(1)[:3].capitalize()} {m.group(2)} {m.group(3)}", "%b %d %Y"
-            )
-        except ValueError:
-            pass
-
-    # Pattern 3: DD/MM/YYYY or MM/DD/YYYY — treat as MM/DD/YYYY
-    m = re.search(r"\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})\b", excerpt)
-    if m:
-        try:
-            return datetime(int(m.group(3)), int(m.group(1)), int(m.group(2)))
-        except ValueError:
-            pass
-
-    return None
 
 
 # ── Version management ────────────────────────────────────────────────────────
@@ -223,72 +173,26 @@ def process_user(db, user: User) -> None:
     if not prepared:
         return
 
-    # ── Step 2: Heuristic pre-filter ─────────────────────────────────────────
-    needs_llm: list[dict] = []
-    heuristic_results: dict[str, dict] = {}  # file_id → partial result
-
-    for item in prepared:
-        fid = item["file_meta"]["id"]
-        fname = item["file_meta"]["name"]
-        text = item["text"]
-        folder_path = item["folder_path"]
-
-        doc_type, confident = classify_document(text, fname)
-        deal_name_from_folder = extract_deal_from_folder_path(folder_path)
-        doc_date = _extract_doc_date(text)
-
-        if confident and deal_name_from_folder:
-            # Both signals confident — skip LLM
-            heuristic_results[fid] = {
-                "doc_type": doc_type,
-                "deal_name": deal_name_from_folder,
-                "doc_date": doc_date,
-                "summary": None,  # will use fallback summarizer
-            }
-        else:
-            needs_llm.append(
-                {
-                    "custom_id": fid,
-                    "file_name": fname,
-                    "text": text,
-                    "known_deal_name": deal_name_from_folder,  # hint for prompt
-                    "_heuristic_type": doc_type,
-                    "_heuristic_date": doc_date,
-                }
-            )
-
-    logger.info(
-        f"User {user.id}: {len(heuristic_results)} heuristic-only, "
-        f"{len(needs_llm)} need LLM"
-    )
-
-    # ── Step 3: Batch LLM analysis ────────────────────────────────────────────
+    # ── Step 2: Batch LLM analysis (all docs) ────────────────────────────────
+    # folder_path is passed as a soft context hint so the LLM can factor in
+    # file location, but LLM output is always authoritative.
     llm_results: dict[str, AnalysisResult] = {}
-    if needs_llm:
-        batch_items = [
-            {
-                "custom_id": d["custom_id"],
-                "file_name": d["file_name"],
-                "text": d["text"],
-                "known_deal_name": d["known_deal_name"],
-            }
-            for d in needs_llm
-        ]
-        analysis = analyze_batch(batch_items)
-        for result in analysis:
-            llm_results[result.custom_id] = result
+    batch_items = [
+        {
+            "custom_id": item["file_meta"]["id"],
+            "file_name": item["file_meta"]["name"],
+            "text": item["text"],
+            "folder_path": item["folder_path"],
+        }
+        for item in prepared
+    ]
+    analysis = analyze_batch(batch_items)
+    for result in analysis:
+        llm_results[result.custom_id] = result
 
-        # Folder path always wins over LLM for deal name
-        for item in needs_llm:
-            fid = item["custom_id"]
-            res = llm_results.get(fid)
-            if res:
-                if res.doc_date is None:
-                    res.doc_date = item["_heuristic_date"]
-                if item["known_deal_name"]:
-                    res.deal_name = item["known_deal_name"]
+    logger.info(f"User {user.id}: {len(prepared)} file(s) through LLM batch")
 
-    # ── Step 4: Persist all documents ────────────────────────────────────────
+    # ── Step 3: Persist all documents ────────────────────────────────────────
     processed_docs: list[Document] = []
 
     for item in prepared:
@@ -307,23 +211,18 @@ def process_user(db, user: User) -> None:
         document = create_document(db, doc_data)
 
         try:
-            if fid in heuristic_results:
-                h = heuristic_results[fid]
-                doc_type = h["doc_type"]
-                raw_deal_name: Optional[str] = h["deal_name"]
-                doc_date = h["doc_date"] or item["drive_created_time"]
-                description = generate_description(item["text"])
-            elif fid in llm_results:
+            if fid in llm_results:
                 r = llm_results[fid]
                 doc_type = r.doc_type
-                raw_deal_name = r.deal_name
+                raw_deal_name: Optional[str] = r.deal_name
                 doc_date = r.doc_date or item["drive_created_time"]
-                description = r.summary or generate_description(item["text"])
+                description = r.summary or text_summary(item["text"])
             else:
+                # LLM unavailable — store with safe defaults, no deal attribution
                 doc_type = "pitch_deck"
-                raw_deal_name = extract_deal_from_folder_path(folder_path)
-                doc_date = _extract_doc_date(item["text"]) or item["drive_created_time"]
-                description = generate_description(item["text"])
+                raw_deal_name = None
+                doc_date = item["drive_created_time"]
+                description = text_summary(item["text"])
 
             # Resolve deal_id
             deal_id: Optional[int] = None
@@ -356,24 +255,33 @@ def process_user(db, user: User) -> None:
         f"User {user.id}: {len(processed_docs)}/{len(prepared)} file(s) persisted"
     )
 
-    # ── Step 5: Version management ────────────────────────────────────────────
+    # ── Step 4: Version management ────────────────────────────────────────────
     for doc in processed_docs:
         _mark_superseded_versions(db, doc)
 
-    # ── Step 6: Vectorize latest per type ─────────────────────────────────────
+    # ── Step 5: Vectorize latest per type ─────────────────────────────────────
+    # Build a cache of already-extracted text from this run to avoid re-downloading
+    text_cache: dict[str, str] = {
+        item["file_meta"]["id"]: item["text"] for item in prepared
+    }
+
     latest_docs = get_latest_documents_per_type(db, user.id)
     logger.info(f"User {user.id}: {len(latest_docs)} document(s) to vectorize")
 
     for doc in latest_docs:
-        content = fetch_file_content(user, doc.file_id)
-        if content is None:
-            logger.warning(f"Cannot vectorize '{doc.file_name}' – download failed")
-            continue
-        try:
-            text = extract_text(content, doc.file_name)
-        except Exception as exc:
-            logger.error(f"Re-extraction failed for '{doc.file_name}': {exc}")
-            continue
+        if doc.file_id in text_cache:
+            text = text_cache[doc.file_id]
+        else:
+            # Doc was already processed in a prior run — must re-download
+            content = fetch_file_content(user, doc.file_id)
+            if content is None:
+                logger.warning(f"Cannot vectorize '{doc.file_name}' – download failed")
+                continue
+            try:
+                text = extract_text(content, doc.file_name)
+            except Exception as exc:
+                logger.error(f"Re-extraction failed for '{doc.file_name}': {exc}")
+                continue
 
         send_to_vectorizer(doc, text)
         update_document(db, doc.id, status="vectorized")

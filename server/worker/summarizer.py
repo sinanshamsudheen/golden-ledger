@@ -58,6 +58,11 @@ def generate_description(text: str) -> Optional[str]:
 
 # ── Fallback ──────────────────────────────────────────────────────────────────
 
+def text_summary(text: str) -> Optional[str]:
+    """Extract a two-sentence summary from raw text without any LLM call."""
+    return _fallback_summary(text)
+
+
 def _fallback_summary(text: str) -> Optional[str]:
     """
     Return the first two meaningful sentences from the document.

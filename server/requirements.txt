@@ -36,3 +36,6 @@ python-multipart==0.0.12
 
 # Environment
 python-dotenv==1.0.1
+
+# Fuzzy string matching
+rapidfuzz==3.9.7

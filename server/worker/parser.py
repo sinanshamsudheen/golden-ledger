@@ -34,6 +34,8 @@ def extract_text(content: bytes, file_name: str) -> str:
         return _extract_pptx(content)
     elif lower.endswith(".docx"):
         return _extract_docx(content)
+    elif lower.endswith(".txt"):
+        return content.decode("utf-8", errors="ignore")
     else:
         raise ValueError(f"Unsupported file format: '{file_name}'")
 
