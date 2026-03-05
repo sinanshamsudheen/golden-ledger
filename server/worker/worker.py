@@ -417,40 +417,53 @@ def process_user(db, user: User) -> None:
 
     # ── Step 4.5: Retire meeting-minutes-only deals ───────────────────────────
     # A deal whose only classified documents are meeting_minutes is a
-    # client/portfolio deal, not a pipeline opportunity.  Mark every document
-    # in such deals as doc_type="client", status="skipped" so they:
-    #   • are never vectorized
-    #   • never appear in API responses (same tombstone used for is_client flag)
+    # client/portfolio deal, not a pipeline opportunity.
+    # Single SELECT across all touched deals, then one bulk UPDATE — avoids
+    # N individual queries + M individual commits that would slow at scale.
     _PIPELINE_TYPES = {"pitch_deck", "investment_memo", "prescreening_report"}
-    all_deal_ids = {doc.deal_id for doc in all_processed_docs if doc.deal_id is not None}
-    retired_deals = 0
-    for deal_id in all_deal_ids:
-        deal_docs = (
+    all_deal_ids = list({doc.deal_id for doc in all_processed_docs if doc.deal_id is not None})
+
+    if all_deal_ids:
+        deal_docs_all = (
             db.query(Document)
             .filter(
-                Document.deal_id == deal_id,
+                Document.deal_id.in_(all_deal_ids),
                 Document.user_id == user.id,
                 Document.doc_type.in_(list(_PIPELINE_TYPES) + ["meeting_minutes"]),
                 Document.status.in_(["processed", "vectorized"]),
             )
             .all()
         )
-        if not deal_docs:
-            continue
-        has_pipeline = any(d.doc_type in _PIPELINE_TYPES for d in deal_docs)
-        if has_pipeline:
-            continue
-        # Every current doc is meeting_minutes — retire them all
-        for d in deal_docs:
-            update_document(db, d.id, doc_type="client", status="skipped")
-        # Also remove from all_processed_docs so they skip version-mgmt + vectorization
-        all_processed_docs = [d for d in all_processed_docs if d.deal_id != deal_id]
-        retired_deals += 1
-        logger.info(
-            f"Retired deal_id={deal_id} — all {len(deal_docs)} doc(s) are meeting_minutes only"
-        )
-    if retired_deals:
-        logger.info(f"User {user.id}: retired {retired_deals} meeting-minutes-only deal(s)")
+
+        # Group in Python — no extra queries
+        by_deal: dict[int, list[Document]] = {}
+        for d in deal_docs_all:
+            by_deal.setdefault(d.deal_id, []).append(d)
+
+        minutes_only_ids = {
+            deal_id
+            for deal_id, docs in by_deal.items()
+            if not any(d.doc_type in _PIPELINE_TYPES for d in docs)
+        }
+
+        if minutes_only_ids:
+            # One UPDATE statement for all affected docs
+            db.query(Document).filter(
+                Document.deal_id.in_(list(minutes_only_ids)),
+                Document.user_id == user.id,
+                Document.status.in_(["processed", "vectorized"]),
+            ).update(
+                {"doc_type": "client", "status": "skipped"},
+                synchronize_session="fetch",
+            )
+            db.commit()
+            all_processed_docs = [
+                d for d in all_processed_docs if d.deal_id not in minutes_only_ids
+            ]
+            logger.info(
+                f"User {user.id}: retired {len(minutes_only_ids)} "
+                f"meeting-minutes-only deal(s) — {sum(len(by_deal[i]) for i in minutes_only_ids)} doc(s) marked client/skipped"
+            )
 
     # ── Step 5: Vectorize + analyze per deal (requires VECTORIZER_INGEST_URL) ────
     if not cfg.VECTORIZER_INGEST_URL:
