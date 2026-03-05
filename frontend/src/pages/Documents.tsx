@@ -37,6 +37,9 @@ const Documents = () => {
           <div>
             <h1 className="font-heading text-3xl font-semibold text-foreground">Deals</h1>
             <p className="mt-1 text-sm text-muted-foreground">
+              {user.company_name && (
+                <span className="font-medium text-foreground">{user.company_name} · </span>
+              )}
               {dealsWithDocs.length} deal{dealsWithDocs.length !== 1 ? "s" : ""}
             </p>
           </div>

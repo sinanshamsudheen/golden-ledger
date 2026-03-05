@@ -25,14 +25,56 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   return res.json() as Promise<T>;
 }
 
+export interface DealDocSlot {
+  id: number;
+  file_id: string;
+  name: string;
+  date: string | null;
+  description: string | null;
+  vectorizer_doc_id: string | null;
+}
+
+export interface DealDocSlots {
+  pitch_deck: DealDocSlot | null;
+  investment_memo: DealDocSlot | null;
+  prescreening_report: DealDocSlot | null;
+  meeting_minutes: DealDocSlot | null;
+}
+
+export interface ArchivedDoc {
+  id: number;
+  file_id: string;
+  type: string;
+  name: string;
+  date: string | null;
+}
+
+export interface DealResponse {
+  id: number;
+  name: string;
+  documents: DealDocSlots;
+  archived: ArchivedDoc[];
+  doc_count: number;
+  investment_type: string | null;
+  deal_status: string | null;
+  deal_reason: string | null;
+}
+
 export const api = {
   /** Redirect browser to Google OAuth */
   loginWithGoogle(): void {
     window.location.href = `${BASE_URL}/auth/login`;
   },
 
-  getMe(): Promise<{ id: number; email: string; folder_id: string | null }> {
+  getMe(): Promise<{ id: number; email: string; folder_id: string | null; company_name: string | null }> {
     return apiFetch("/auth/me");
+  },
+
+  updateProfile(data: { company_name: string }): Promise<{ id: number; email: string; folder_id: string | null; company_name: string | null }> {
+    return apiFetch("/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
   },
 
   setFolder(folderPath: string): Promise<{ folder_id: string; folder_path: string }> {
@@ -74,34 +116,3 @@ export const api = {
     return apiFetch(`/documents/deals/${dealId}`);
   },
 };
-
-export interface DealDocSlot {
-  id: number;
-  file_id: string;
-  name: string;
-  date: string | null;
-  description: string | null;
-}
-
-export interface DealDocSlots {
-  pitch_deck: DealDocSlot | null;
-  investment_memo: DealDocSlot | null;
-  prescreening_report: DealDocSlot | null;
-  meeting_minutes: DealDocSlot | null;
-}
-
-export interface ArchivedDoc {
-  id: number;
-  file_id: string;
-  type: string;
-  name: string;
-  date: string | null;
-}
-
-export interface DealResponse {
-  id: number;
-  name: string;
-  documents: DealDocSlots;
-  archived: ArchivedDoc[];
-  doc_count: number;
-}

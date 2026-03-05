@@ -12,7 +12,12 @@ export default defineConfig(({ mode }) => ({
     proxy: {
       "/auth": "http://localhost:8000",
       "/drive": "http://localhost:8000",
-      "/documents": "http://localhost:8000",
+      // Only the real API sub-paths — NOT /documents or /documents/:id
+      // which are React Router client-side routes.
+      "^/documents/(latest|all|deals)(/.*)?$": {
+        target: "http://localhost:8000",
+        rewrite: (path) => path,
+      },
       "/sync": "http://localhost:8000",
       "/health": "http://localhost:8000",
     },

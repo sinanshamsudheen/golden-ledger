@@ -16,9 +16,14 @@ class UserUpdate(BaseModel):
     folder_id: Optional[str] = None
 
 
+class UpdateProfileRequest(BaseModel):
+    company_name: str
+
+
 class UserResponse(UserBase):
     id: int
     folder_id: Optional[str] = None
+    company_name: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

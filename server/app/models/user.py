@@ -13,6 +13,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     refresh_token: Mapped[str | None] = mapped_column(String, nullable=True)
     folder_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

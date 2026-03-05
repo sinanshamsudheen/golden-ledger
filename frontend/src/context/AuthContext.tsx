@@ -6,6 +6,7 @@ interface User {
   id: number;
   email: string;
   folder_id: string | null;
+  company_name: string | null;
 }
 
 interface AuthContextValue {

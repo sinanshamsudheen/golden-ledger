@@ -13,7 +13,7 @@ from ..services import google_auth_service
 from ..utils.auth import create_access_token, create_refresh_token, verify_refresh_token, get_current_user
 from ..utils.encryption import encrypt
 from ..config import settings
-from ..schemas.user_schema import UserResponse
+from ..schemas.user_schema import UserResponse, UpdateProfileRequest
 
 logger = logging.getLogger(__name__)
 
@@ -105,4 +105,17 @@ def refresh_token(request: Request, body: RefreshRequest, db: Session = Depends(
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
     """Return the current authenticated user's profile."""
+    return current_user
+
+
+@router.patch("/me", response_model=UserResponse)
+def update_me(
+    body: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update mutable profile fields (company_name)."""
+    current_user.company_name = body.company_name.strip() or None
+    db.commit()
+    db.refresh(current_user)
     return current_user

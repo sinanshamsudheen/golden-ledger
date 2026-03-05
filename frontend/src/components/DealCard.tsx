@@ -1,34 +1,10 @@
 import { motion } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import type { DealDocSlot, DealDocSlots, DealResponse } from "@/lib/api";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-export interface DealDocSlot {
-  id: number;
-  file_id: string;
-  name: string;
-  date: string | null;
-  description: string | null;
-  vectorizer_doc_id: string | null;
-}
-
-export interface DealDocSlots {
-  pitch_deck: DealDocSlot | null;
-  investment_memo: DealDocSlot | null;
-  prescreening_report: DealDocSlot | null;
-  meeting_minutes: DealDocSlot | null;
-}
-
-export interface Deal {
-  id: number;
-  name: string;
-  documents: DealDocSlots;
-  doc_count: number;
-  investment_type: string | null;
-  deal_status: string | null;
-  deal_reason: string | null;
-}
+export type { DealDocSlot, DealDocSlots };
+export type Deal = DealResponse;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
