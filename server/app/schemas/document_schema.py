@@ -90,6 +90,15 @@ class ArchivedDoc(BaseModel):
     date: Optional[str] = None
 
 
+class LockedFileDoc(BaseModel):
+    """A password-protected file that could not be parsed."""
+
+    id: int
+    file_id: str
+    name: str
+    date: Optional[str] = None
+
+
 class DealResponse(BaseModel):
     """Full deal with its current document slots, archive, and analytical results."""
 
@@ -102,3 +111,5 @@ class DealResponse(BaseModel):
     investment_type: Optional[str] = None   # Fund | Direct | Co-Investment
     deal_status: Optional[str] = None       # accepted | rejected
     deal_reason: Optional[str] = None       # IC rationale (1-2 sentences)
+    # Password-protected files that couldn’t be processed
+    locked_files: list[LockedFileDoc] = []

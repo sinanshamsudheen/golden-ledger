@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { api, DealResponse, DealDocSlot, ArchivedDoc } from "@/lib/api";
+import { api, DealResponse, DealDocSlot, ArchivedDoc, LockedFileDoc } from "@/lib/api";
 import Navbar from "@/components/Navbar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -10,7 +10,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ArrowLeft, ExternalLink, FileText, FileType, File, ChevronDown } from "lucide-react";
+import { ArrowLeft, ExternalLink, FileText, FileType, File, ChevronDown, Lock } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 const TYPE_LABELS: Record<string, string> = {
   pitch_deck: "Pitch Deck",
@@ -146,6 +147,51 @@ const DealDetail = () => {
               {deal.doc_count} of 4 document{deal.doc_count !== 1 ? "s" : ""} available
             </p>
 
+            {/* Analysis metadata */}
+            <div className="mt-5 flex flex-wrap items-center gap-3">
+              {/* Investment type */}
+              {deal.investment_type && (() => {
+                const styles: Record<string, string> = {
+                  Fund: "bg-indigo-500/15 text-indigo-400 border-transparent",
+                  Direct: "bg-amber-500/15 text-amber-400 border-transparent",
+                  "Co-Investment": "bg-purple-500/15 text-purple-400 border-transparent",
+                };
+                return (
+                  <Badge className={cn("text-xs font-medium", styles[deal.investment_type] ?? "border-muted-foreground/30 text-muted-foreground")}>
+                    {deal.investment_type}
+                  </Badge>
+                );
+              })()}
+
+              {/* Deal status */}
+              {deal.deal_status ? (
+                <Badge
+                  className={cn(
+                    "border-transparent font-semibold",
+                    deal.deal_status === "accepted"
+                      ? "bg-emerald-500/15 text-emerald-400"
+                      : "bg-red-500/15 text-red-400",
+                  )}
+                >
+                  {deal.deal_status === "accepted" ? "✓ Accepted" : "✕ Rejected"}
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="border-muted-foreground/30 text-muted-foreground text-xs">
+                  Pending analysis
+                </Badge>
+              )}
+            </div>
+
+            {/* IC rationale */}
+            {deal.deal_reason && (
+              <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+                <span className="font-medium text-foreground/70">
+                  {deal.deal_status === "accepted" ? "Why accepted: " : deal.deal_status === "rejected" ? "Why rejected: " : ""}
+                </span>
+                {deal.deal_reason}
+              </p>
+            )}
+
             {/* 2×2 document slots */}
             <div className="mt-8 grid gap-4 sm:grid-cols-2">
               {DOC_TYPES.map((type) => {
@@ -175,6 +221,32 @@ const DealDetail = () => {
                   </div>
                 </CollapsibleContent>
               </Collapsible>
+            )}
+
+            {/* Password-protected files */}
+            {deal.locked_files && deal.locked_files.length > 0 && (
+              <div className="mt-8">
+                <h2 className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                  <Lock className="h-4 w-4" />
+                  Password Protected ({deal.locked_files.length})
+                </h2>
+                <div className="mt-3 rounded-xl border border-border divide-y divide-border">
+                  {deal.locked_files.map((f: LockedFileDoc) => (
+                    <div key={f.id} className="flex items-center gap-4 px-4 py-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted/50">
+                        <Lock className="h-4 w-4 text-muted-foreground/50" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-muted-foreground">{formatName(f.name)}</p>
+                        {f.date && <p className="text-xs text-muted-foreground/60">{formatDate(f.date)}</p>}
+                      </div>
+                      <span className="shrink-0 rounded-full border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-[10px] font-medium text-yellow-400">
+                        Locked
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
           </>
         )}

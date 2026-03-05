@@ -13,6 +13,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class PasswordProtectedError(Exception):
+    """Raised when a document is password-protected and cannot be parsed."""
+
+
+# OLE2 magic bytes — encrypted Office files (docx/pptx/xlsx) are CFBF containers
+_OLE_MAGIC = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
+
+
+def _is_ole_encrypted(content: bytes) -> bool:
+    return content[:8] == _OLE_MAGIC
+
+
 def extract_text(content: bytes, file_name: str) -> str:
     """
     Dispatch to the correct extractor based on file extension.
@@ -46,20 +58,36 @@ def _extract_pdf(content: bytes) -> str:
     from pdfminer.high_level import extract_text_to_fp
     from pdfminer.layout import LAParams
 
+    try:
+        from pdfminer.pdfdocument import PDFPasswordIncorrect as _PDFPasswordIncorrect
+    except ImportError:
+        _PDFPasswordIncorrect = None  # type: ignore[assignment]
+
     output = io.StringIO()
-    extract_text_to_fp(
-        io.BytesIO(content),
-        output,
-        laparams=LAParams(),
-        output_type="text",
-        codec="utf-8",
-    )
+    try:
+        extract_text_to_fp(
+            io.BytesIO(content),
+            output,
+            laparams=LAParams(),
+            output_type="text",
+            codec="utf-8",
+        )
+    except Exception as exc:
+        # Detect by class name for forward-compat with pdfminer version differences
+        if (
+            (_PDFPasswordIncorrect and isinstance(exc, _PDFPasswordIncorrect))
+            or type(exc).__name__ == "PDFPasswordIncorrect"
+        ):
+            raise PasswordProtectedError("PDF is password-protected") from exc
+        raise
     return output.getvalue().strip()
 
 
 # ── PPTX ──────────────────────────────────────────────────────────────────────
 
 def _extract_pptx(content: bytes) -> str:
+    if _is_ole_encrypted(content):
+        raise PasswordProtectedError("PPTX is password-protected")
     from pptx import Presentation
 
     prs = Presentation(io.BytesIO(content))
@@ -77,6 +105,8 @@ def _extract_pptx(content: bytes) -> str:
 # ── DOCX ──────────────────────────────────────────────────────────────────────
 
 def _extract_docx(content: bytes) -> str:
+    if _is_ole_encrypted(content):
+        raise PasswordProtectedError("DOCX is password-protected")
     import docx
 
     doc = docx.Document(io.BytesIO(content))

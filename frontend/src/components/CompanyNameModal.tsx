@@ -27,8 +27,7 @@ export default function CompanyNameModal({ open, onSaved, onClose }: Props) {
     const trimmed = value.trim();
     if (!trimmed) return;
     setSaving(true);
-    console.log("[CompanyNameModal] api object keys:", Object.keys(api));
-    console.log("[CompanyNameModal] api.updateProfile:", api.updateProfile);
+
     try {
       const updated = await api.updateProfile({ company_name: trimmed });
       onSaved(updated.company_name ?? trimmed);

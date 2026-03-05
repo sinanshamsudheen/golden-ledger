@@ -18,6 +18,7 @@ from ..schemas.document_schema import (
     DealDocSlots,
     DealDocSlot,
     ArchivedDoc,
+    LockedFileDoc,
 )
 from ..utils.auth import get_current_user
 
@@ -113,7 +114,8 @@ def list_deals(
             db.query(Document)
             .filter(
                 Document.deal_id == deal.id,
-                Document.status.in_(["processed", "vectorized"]),
+                Document.doc_type.in_(_DOC_TYPES + ["password_protected"]),
+                Document.status.in_(["processed", "vectorized", "skipped"]),
             )
             .all()
         )
@@ -121,12 +123,22 @@ def list_deals(
         # Fill the 4 current slots (latest doc per type)
         slots: dict[str, DealDocSlot | None] = {t: None for t in _DOC_TYPES}
         archived: list[ArchivedDoc] = []
+        locked: list[LockedFileDoc] = []
 
         # Track current docs per type for slot filling (keep newest by doc_created_date)
         current_by_type: dict[str, Document] = {}
         for doc in docs:
             dtype = doc.doc_type or ""
-            if doc.version_status == "superseded":
+            if dtype == "password_protected":
+                locked.append(
+                    LockedFileDoc(
+                        id=doc.id,
+                        file_id=doc.file_id,
+                        name=doc.file_name,
+                        date=_fmt_date(doc.doc_created_date or doc.drive_created_time),
+                    )
+                )
+            elif doc.version_status == "superseded":
                 archived.append(
                     ArchivedDoc(
                         id=doc.id,
@@ -169,6 +181,7 @@ def list_deals(
                 investment_type=deal.investment_type,
                 deal_status=deal.deal_status,
                 deal_reason=deal.deal_reason,
+                locked_files=locked,
             )
         )
 
@@ -198,18 +211,29 @@ def get_deal(
         db.query(Document)
         .filter(
             Document.deal_id == deal.id,
-            Document.status.in_(["processed", "vectorized"]),
+            Document.doc_type.in_(_DOC_TYPES + ["password_protected"]),
+            Document.status.in_(["processed", "vectorized", "skipped"]),
         )
         .all()
     )
 
     slots: dict[str, DealDocSlot | None] = {t: None for t in _DOC_TYPES}
     archived: list[ArchivedDoc] = []
+    locked: list[LockedFileDoc] = []
 
     current_by_type: dict[str, Document] = {}
     for doc in docs:
         dtype = doc.doc_type or ""
-        if doc.version_status == "superseded":
+        if dtype == "password_protected":
+            locked.append(
+                LockedFileDoc(
+                    id=doc.id,
+                    file_id=doc.file_id,
+                    name=doc.file_name,
+                    date=_fmt_date(doc.doc_created_date or doc.drive_created_time),
+                )
+            )
+        elif doc.version_status == "superseded":
             archived.append(
                 ArchivedDoc(
                     id=doc.id,
@@ -250,4 +274,5 @@ def get_deal(
         investment_type=deal.investment_type,
         deal_status=deal.deal_status,
         deal_reason=deal.deal_reason,
+        locked_files=locked,
     )

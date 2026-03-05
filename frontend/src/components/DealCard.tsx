@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import { Lock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { DealDocSlot, DealDocSlots, DealResponse } from "@/lib/api";
@@ -142,6 +143,9 @@ const DealCard = ({ deal }: { deal: Deal }) => {
       {/* Reason */}
       {deal.deal_reason ? (
         <p className="mt-3 text-xs leading-relaxed text-muted-foreground line-clamp-3">
+          <span className="font-medium text-foreground/70">
+            {deal.deal_status === "accepted" ? "Why accepted: " : deal.deal_status === "rejected" ? "Why rejected: " : ""}
+          </span>
           {deal.deal_reason}
         </p>
       ) : (
@@ -156,6 +160,29 @@ const DealCard = ({ deal }: { deal: Deal }) => {
           <DocSlot key={key} typeKey={key} slot={deal.documents[key]} />
         ))}
       </div>
+
+      {/* Password-protected files */}
+      {deal.locked_files && deal.locked_files.length > 0 && (
+        <div className="mt-4 rounded-md border border-border/50 bg-muted/20 px-3 py-2.5">
+          <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            <Lock className="h-3 w-3" />
+            Password Protected
+          </p>
+          <div className="space-y-1.5">
+            {deal.locked_files.map((f) => (
+              <div key={f.id} className="flex items-center gap-2">
+                <Lock className="h-3 w-3 shrink-0 text-muted-foreground/40" />
+                <span
+                  className="truncate text-xs text-muted-foreground/60"
+                  title={f.name}
+                >
+                  {formatName(f.name)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 };

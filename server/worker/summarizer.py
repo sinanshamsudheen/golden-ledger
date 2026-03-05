@@ -8,9 +8,13 @@ the LLM is unavailable (no API key or network error).
 
 import logging
 import os
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+_MAX_LLM_RETRIES = 3
+_LLM_RETRY_BACKOFF = (5.0, 15.0, 30.0)   # wait (seconds) before attempt n+1
 
 _SYSTEM_PROMPT = (
     "You are a financial analyst assistant. Be concise and precise. "
@@ -34,26 +38,36 @@ def generate_description(text: str) -> Optional[str]:
         logger.warning("OPENAI_API_KEY not set – using fallback summarization")
         return _fallback_summary(text)
 
-    try:
-        from openai import OpenAI
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_LLM_RETRIES + 1):
+        try:
+            from openai import OpenAI
 
-        client = OpenAI(api_key=api_key)
-        truncated = text[:3000]
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": _USER_PROMPT.format(text=truncated)},
-            ],
-            max_tokens=120,
-            temperature=0.3,
-        )
-        summary = response.choices[0].message.content.strip()
-        logger.info("Document summary generated via LLM")
-        return summary
-    except Exception as exc:
-        logger.error(f"LLM summarization failed: {exc}")
-        return _fallback_summary(text)
+            client = OpenAI(api_key=api_key)
+            truncated = text[:3000]
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": _USER_PROMPT.format(text=truncated)},
+                ],
+                max_tokens=120,
+                temperature=0.3,
+            )
+            summary = response.choices[0].message.content.strip()
+            logger.info("Document summary generated via LLM")
+            return summary
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _MAX_LLM_RETRIES:
+                wait = _LLM_RETRY_BACKOFF[min(attempt - 1, len(_LLM_RETRY_BACKOFF) - 1)]
+                logger.warning(
+                    f"LLM summarization attempt {attempt}/{_MAX_LLM_RETRIES} failed: {exc} "
+                    f"\u2014 retrying in {wait:.0f}s"
+                )
+                time.sleep(wait)
+    logger.error(f"LLM summarization failed after {_MAX_LLM_RETRIES} attempts: {last_exc}")
+    return _fallback_summary(text)
 
 
 # ── Fallback ──────────────────────────────────────────────────────────────────

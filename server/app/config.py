@@ -19,8 +19,10 @@ class Settings(BaseSettings):
     VECTORIZER_INGEST_URL: Optional[str] = None
     # Base URL for the RAG / Analytical gateway (may differ from ingestion host)
     VECTORIZER_ANALYTICAL_URL: Optional[str] = None
-    # Azure Functions host key shared by both endpoints
+    # Azure Functions host key for document ingestion endpoint
     VECTORIZER_FUNCTION_KEY: Optional[str] = None
+    # Azure Functions host key for the RAG / Analytical endpoint (if different)
+    RAG_FUNCTION_KEY: Optional[str] = None
     # Tenant identifier assigned to your organisation
     VECTORIZER_TENANT_ID: Optional[str] = None
     # Deployment region tag sent in the ingestion payload

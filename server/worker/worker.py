@@ -58,18 +58,36 @@ from worker.drive_ingestion import (
     compute_checksum,
     parse_drive_created_time,
 )
-from worker.parser import extract_text
+from worker.parser import extract_text, PasswordProtectedError
 from worker.batch_analyzer import analyze_batch, AnalysisResult
 from worker.summarizer import text_summary
 from worker.deal_resolver import get_or_create_deal
 from worker.vectorizer import ingest_and_analyze_deal
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s – %(message)s",
-)
+_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s – %(message)s"
+_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+
+import datetime as _dt
+_run_ts = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+_log_file = os.path.join(_LOG_DIR, f"worker_{_run_ts}.log")
+
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+
+_fmt = logging.Formatter(_LOG_FORMAT)
+
+_sh = logging.StreamHandler()
+_sh.setFormatter(_fmt)
+_root.addHandler(_sh)
+
+_fh = logging.FileHandler(_log_file, encoding="utf-8")
+_fh.setFormatter(_fmt)
+_root.addHandler(_fh)
+
 logger = logging.getLogger("worker")
+logger.info(f"Logging to {_log_file}")
 
 INGEST_BATCH = 100  # max files per download → LLM → persist cycle — caps peak RAM
 
@@ -184,6 +202,17 @@ def process_user(db, user: User) -> None:
 
             try:
                 text = extract_text(content, file_name)
+            except PasswordProtectedError:
+                logger.info(f"'{file_name}' is password-protected — flagging")
+                return {
+                    "file_meta": file_meta,
+                    "content": content,
+                    "text": "",
+                    "checksum": compute_checksum(content),
+                    "drive_created_time": parse_drive_created_time(file_meta),
+                    "folder_path": folder_path,
+                    "password_protected": True,
+                }
             except Exception as exc:
                 logger.error(f"Skipping '{file_name}' – text extraction failed: {exc}")
                 return None
@@ -221,6 +250,7 @@ def process_user(db, user: User) -> None:
                 "folder_path": item["folder_path"],
             }
             for item in prepared
+            if not item.get("password_protected")
         ]
         analysis = analyze_batch(batch_items)
         for result in analysis:
@@ -234,6 +264,37 @@ def process_user(db, user: User) -> None:
             fid = item["file_meta"]["id"]
             fname = item["file_meta"]["name"]
             folder_path = item["folder_path"]
+
+            # ── Password-protected: persist tombstone, infer deal from folder path ──
+            if item.get("password_protected"):
+                doc_data = DocumentCreate(
+                    user_id=user.id,
+                    file_id=fid,
+                    file_name=fname,
+                    drive_created_time=item["drive_created_time"],
+                    checksum=item["checksum"],
+                    status="pending",
+                )
+                document = create_document(db, doc_data)
+                # Infer deal from first folder component (e.g. "Acme Corp/Q1" → "Acme Corp")
+                locked_deal_id: Optional[int] = None
+                if folder_path:
+                    hint = folder_path.split("/")[0].strip()
+                    if hint:
+                        d = get_or_create_deal(db, user.id, hint)
+                        locked_deal_id = d.id if d else None
+                update_document(
+                    db,
+                    document.id,
+                    doc_type="password_protected",
+                    folder_path=folder_path or None,
+                    deal_id=locked_deal_id,
+                    status="skipped",
+                )
+                logger.info(
+                    f"Flagged '{fname}' as password-protected — deal_id={locked_deal_id}"
+                )
+                continue
 
             doc_data = DocumentCreate(
                 user_id=user.id,
@@ -329,33 +390,44 @@ def process_user(db, user: User) -> None:
     # Group by deal_id — only deal-associated documents get the full pipeline.
     # Dealless documents are skipped: without a deal they cannot receive an
     # investment_type / deal_status from the Analytical endpoint.
+    # Documents that already have a vectorizer_doc_id are also skipped — they
+    # were successfully ingested on a previous run.
     per_deal_docs: dict[int, list[Document]] = {}
     dealless_count = 0
+    already_vectorized_count = 0
     for doc in latest_docs:
-        if doc.deal_id is not None:
-            per_deal_docs.setdefault(doc.deal_id, []).append(doc)
-        else:
+        if doc.deal_id is None:
             dealless_count += 1
+        elif doc.vectorizer_doc_id is not None:
+            already_vectorized_count += 1
+        else:
+            per_deal_docs.setdefault(doc.deal_id, []).append(doc)
 
     logger.info(
-        f"User {user.id}: {len(per_deal_docs)} deal(s) to vectorize+analyze "
-        f"({dealless_count} dealless doc(s) skipped)"
+        f"User {user.id}: {len(per_deal_docs)} deal(s) need vectorization "
+        f"({already_vectorized_count} doc(s) already vectorized, "
+        f"{dealless_count} dealless doc(s) skipped)"
     )
 
-    for deal_id, deal_doc_list in per_deal_docs.items():
-        deal = db.query(Deal).filter(Deal.id == deal_id).first()
-        if deal is None:
-            logger.warning(f"Deal {deal_id} not found in DB — skipping")
-            continue
-        try:
-            ingest_and_analyze_deal(db, user, deal, deal_doc_list)
-            for doc in deal_doc_list:
-                update_document(db, doc.id, status="vectorized")
-        except Exception as exc:
-            logger.error(
-                f"Vectorization/analysis failed for deal {deal_id} ({deal.name!r}): {exc}",
-                exc_info=True,
-            )
+    # Run all deals in parallel — each gets its own DB session via
+    # _vectorize_deal_isolated so sessions are never shared across threads.
+    deal_tasks = [
+        (user.id, deal_id, [d.id for d in deal_doc_list])
+        for deal_id, deal_doc_list in per_deal_docs.items()
+    ]
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="vec") as pool:
+        futures = {
+            pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
+            for uid, did, doc_ids in deal_tasks
+        }
+        for future in as_completed(futures):
+            deal_id = futures[future]
+            exc = future.exception()
+            if exc:
+                logger.error(
+                    f"Deal {deal_id} vectorization thread raised: {exc}",
+                    exc_info=exc,
+                )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -377,6 +449,35 @@ def _process_user_isolated(user_id: int) -> None:
     finally:
         db.close()
 
+def _vectorize_deal_isolated(user_id: int, deal_id: int, doc_ids: list[int]) -> None:
+    """
+    Vectorize a single deal in its own DB session — safe to run in a thread.
+
+    Opens a fresh SessionLocal, re-fetches user/deal/docs by primary key, runs
+    the full ingest+analyze pipeline, then closes the session.  Each deal
+    therefore has an independent connection so multiple deals can be processed
+    in parallel without SQLAlchemy "concurrent operations" errors.
+    """
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        deal = db.query(Deal).filter(Deal.id == deal_id).first()
+        if user is None or deal is None:
+            logger.warning(f"[vectorizer] user {user_id} or deal {deal_id} missing \u2014 skipping")
+            return
+        docs = db.query(Document).filter(Document.id.in_(doc_ids)).all()
+        if not docs:
+            return
+        ingest_and_analyze_deal(db, user, deal, docs)
+        for doc in docs:
+            update_document(db, doc.id, status="vectorized")
+    except Exception as exc:
+        logger.error(
+            f"Vectorization failed for deal {deal_id}: {exc}",
+            exc_info=True,
+        )
+    finally:
+        db.close()
 
 def run() -> None:
     """Main worker loop: process all users in parallel (one thread each, max 5)."""
@@ -429,5 +530,60 @@ def _run() -> None:
     logger.info("═══ Worker run complete ═══")
 
 
+def run_vectorizer_only() -> None:
+    """
+    Skip Drive sync + LLM analysis — only run the vectorizer + Analytical
+    pipeline on deals that already have documents in the DB but haven't
+    been vectorized yet (vectorizer_doc_id IS NULL on their docs).
+    """
+    logger.info("═══ Vectorizer-only run started ═══")
+    db = SessionLocal()
+    try:
+        user_ids = [u.id for u in db.query(User.id).all()]
+    finally:
+        db.close()
+
+    for uid in user_ids:
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == uid).first()
+            if not user or not user.folder_id:
+                continue
+
+            # All deals that have at least one unvectorized current doc
+            latest_docs = get_latest_documents_per_type(db, uid)
+            per_deal: dict[int, list[int]] = {}   # deal_id -> [doc_id, ...]
+            for doc in latest_docs:
+                if doc.deal_id is not None and doc.vectorizer_doc_id is None:
+                    per_deal.setdefault(doc.deal_id, []).append(doc.id)
+
+            logger.info(
+                f"User {uid}: {len(per_deal)} deal(s) need vectorization"
+            )
+        finally:
+            db.close()
+
+        # Run all deals in parallel; each opens its own session
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="vec") as pool:
+            futures = {
+                pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
+                for did, doc_ids in per_deal.items()
+            }
+            for future in as_completed(futures):
+                deal_id = futures[future]
+                exc = future.exception()
+                if exc:
+                    logger.error(
+                        f"Deal {deal_id} vectorization thread raised: {exc}",
+                        exc_info=exc,
+                    )
+
+    logger.info("═══ Vectorizer-only run complete ═══")
+
+
 if __name__ == "__main__":
-    run()
+    import sys
+    if "--vectorize-only" in sys.argv:
+        run_vectorizer_only()
+    else:
+        run()

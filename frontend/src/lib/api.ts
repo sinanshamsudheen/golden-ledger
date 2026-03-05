@@ -49,6 +49,13 @@ export interface ArchivedDoc {
   date: string | null;
 }
 
+export interface LockedFileDoc {
+  id: number;
+  file_id: string;
+  name: string;
+  date: string | null;
+}
+
 export interface DealResponse {
   id: number;
   name: string;
@@ -58,6 +65,7 @@ export interface DealResponse {
   investment_type: string | null;
   deal_status: string | null;
   deal_reason: string | null;
+  locked_files: LockedFileDoc[];
 }
 
 export const api = {

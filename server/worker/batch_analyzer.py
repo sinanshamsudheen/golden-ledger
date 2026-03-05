@@ -19,6 +19,7 @@ analyze_batch(items) -> list[AnalysisResult]
 import json
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,6 +28,9 @@ from typing import Optional
 from worker.classifier import VALID_TYPES
 
 logger = logging.getLogger(__name__)
+
+_MAX_LLM_RETRIES = 3
+_LLM_RETRY_BACKOFF = (5.0, 15.0, 30.0)   # wait (seconds) before attempt n+1
 
 CHUNK_SIZE = 20          # docs per LLM call
 TEXT_LIMIT = 1500        # chars of text sent per doc to LLM

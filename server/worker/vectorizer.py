@@ -42,6 +42,7 @@ If VECTORIZER_INGEST_URL is None the caller should skip this module entirely.
 
 import logging
 import mimetypes
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -61,8 +62,10 @@ _TERMINAL_JOB = frozenset({
     "DOC_PROCESS_COMPLETED",
     "DOC_PROCESS_FAILED",
     "DOC_PROCESS_INCOMPLETED",
+    "PROCESSING_COMPLETE",
+    "COMPLETED",
 })
-_TERMINAL_DOC = frozenset({"COMPLETED", "FAILED"})
+_TERMINAL_DOC = frozenset({"COMPLETED", "FAILED", "PROCESSING_COMPLETE"})
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -80,8 +83,48 @@ def _api_headers() -> dict[str, str]:
     }
 
 
+def _rag_headers() -> dict[str, str]:
+    s = _cfg()
+    key = s.RAG_FUNCTION_KEY or s.VECTORIZER_FUNCTION_KEY or ""
+    return {
+        "x-functions-key": key,
+        "Content-Type": "application/json",
+    }
+
+
+# ── HTTP retry constants ──────────────────────────────────────────────────────
+_MAX_HTTP_RETRIES = 3
+_HTTP_RETRY_BACKOFF = (5.0, 15.0, 30.0)   # wait (seconds) before attempt n+1
+
+
+def _retried_request(
+    method: str, url: str, *, retries: int = _MAX_HTTP_RETRIES, **kwargs
+) -> requests.Response:
+    """Make an HTTP request, retrying up to `retries` times on network errors."""
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 2):
+        try:
+            return requests.request(method, url, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt <= retries:
+                wait = _HTTP_RETRY_BACKOFF[min(attempt - 1, len(_HTTP_RETRY_BACKOFF) - 1)]
+                logger.warning(
+                    f"[vectorizer] {method.upper()} {url[:70]} "
+                    f"attempt {attempt}/{retries + 1} failed: {exc} "
+                    f"\u2014 retrying in {wait:.0f}s"
+                )
+                time.sleep(wait)
+    raise last_exc  # type: ignore[misc]
+
+
 def _guess_mime(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
+def _sanitize_name(name: str) -> str:
+    """Replace characters that are unsafe in blob storage paths / SAS URLs."""
+    return re.sub(r'[#%?&+]', '_', name)
 
 
 def _unique_name(doc_type: str, original_name: str) -> str:
@@ -89,7 +132,7 @@ def _unique_name(doc_type: str, original_name: str) -> str:
     Prefix filename with doc_type so names are unambiguous after the round-trip.
     E.g. "pitch_deck__Q1 Deck.pdf" — safe even when two docs share the same name.
     """
-    return f"{doc_type}__{original_name}"
+    return f"{doc_type}__{_sanitize_name(original_name)}"
 
 
 # ── Stage 1 ───────────────────────────────────────────────────────────────────
@@ -125,7 +168,8 @@ def _create_ingestion_job(docs: list, user_id: int) -> dict | None:
     }
 
     try:
-        resp = requests.post(
+        resp = _retried_request(
+            "POST",
             f"{s.VECTORIZER_INGEST_URL}/v1/api/ingestions",
             headers=_api_headers(),
             json=body,
@@ -160,25 +204,34 @@ def _create_ingestion_job(docs: list, user_id: int) -> dict | None:
 # ── Stage 2 (helper) ──────────────────────────────────────────────────────────
 
 def _put_file(put_url: str, content: bytes, filename: str) -> bool:
-    """PUT raw bytes to the SAS URL."""
+    """PUT raw bytes to the SAS URL, with up to _MAX_HTTP_RETRIES retries."""
     mime = _guess_mime(filename)
-    try:
-        resp = requests.put(
-            put_url,
-            headers={"x-ms-blob-type": "BlockBlob", "Content-Type": mime},
-            data=content,
-            timeout=120,
-        )
-        if resp.status_code not in (200, 201):
-            logger.error(
-                f"[vectorizer] Upload failed for '{filename}': "
-                f"HTTP {resp.status_code} — {resp.text[:200]}"
+    for attempt in range(1, _MAX_HTTP_RETRIES + 2):   # +1 for initial attempt
+        try:
+            resp = requests.put(
+                put_url,
+                headers={"x-ms-blob-type": "BlockBlob", "Content-Type": mime},
+                data=content,
+                timeout=120,
             )
-            return False
-        return True
-    except Exception as exc:
-        logger.error(f"[vectorizer] Upload exception for '{filename}': {exc}")
-        return False
+            if resp.status_code in (200, 201):
+                return True
+            logger.warning(
+                f"[vectorizer] Upload attempt {attempt} failed for '{filename}': "
+                f"HTTP {resp.status_code} \u2014 {resp.text[:200]}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[vectorizer] Upload attempt {attempt} exception for '{filename}': {exc}"
+            )
+        if attempt <= _MAX_HTTP_RETRIES:
+            wait = _HTTP_RETRY_BACKOFF[min(attempt - 1, len(_HTTP_RETRY_BACKOFF) - 1)]
+            logger.info(f"[vectorizer] Retrying upload for '{filename}' in {wait:.0f}s ...")
+            time.sleep(wait)
+    logger.error(
+        f"[vectorizer] Upload failed for '{filename}' after {_MAX_HTTP_RETRIES + 1} attempts"
+    )
+    return False
 
 
 # ── Stage 3 ───────────────────────────────────────────────────────────────────
@@ -188,7 +241,8 @@ def _confirm_uploads(job_id: str, ext_doc_ids: list[str]) -> bool:
     s = _cfg()
     body = {"documents": [{"doc_id": did} for did in ext_doc_ids]}
     try:
-        resp = requests.post(
+        resp = _retried_request(
+            "POST",
             f"{s.VECTORIZER_INGEST_URL}/v1/api/jobs/{job_id}/confirm-upload",
             headers=_api_headers(),
             json=body,
@@ -229,11 +283,11 @@ def _poll_job(job_id: str) -> dict[str, str] | None:
             delay = min(delay * _POLL_BACKOFF_MULT, _POLL_BACKOFF_MAX)
             continue
 
-        job_status = data.get("status", "")
+        job_status = data.get("status") or data.get("job_status", "")
         doc_statuses: dict[str, str] = {
-            d["doc_id"]: d["status"]
+            d.get("doc_id", d.get("id", "")): d.get("status") or d.get("doc_status", "")
             for d in data.get("documents", [])
-            if "doc_id" in d and "status" in d
+            if d.get("doc_id") or d.get("id")
         }
 
         all_terminal = bool(doc_statuses) and all(
@@ -303,9 +357,10 @@ def _run_analytical(
     }
 
     try:
-        resp = requests.post(
+        resp = _retried_request(
+            "POST",
             f"{s.VECTORIZER_ANALYTICAL_URL}/api/Analytical",
-            headers=_api_headers(),
+            headers=_rag_headers(),
             json=payload,
             timeout=180,
         )
@@ -433,6 +488,12 @@ def ingest_and_analyze_deal(db, user, deal, docs: list) -> None:
     db.commit()
 
     # ── Stage 2: Download from Drive + upload to SAS URLs (parallel) ──────────
+    # Pre-load all needed ORM attributes in the main thread.
+    # SQLAlchemy sessions are not thread-safe; lazy-loading inside a
+    # ThreadPoolExecutor will raise "concurrent operations are not permitted".
+    for _doc in docs:
+        _ = _doc.doc_type, _doc.file_name, _doc.file_id
+
     def _upload_one(doc):
         unique_name = _unique_name(doc.doc_type or "doc", doc.file_name)
         entry = name_to_entry.get(unique_name)
@@ -493,18 +554,19 @@ def ingest_and_analyze_deal(db, user, deal, docs: list) -> None:
 
     # ── Stage 5: Persist vectorizer_doc_id for completed docs ────────────────
     ext_ids_completed: list[str] = []
+    _SUCCESS_DOC = _TERMINAL_DOC - {"FAILED"}
     for doc, ext_doc_id in uploaded:
         status = doc_status_map.get(ext_doc_id, "")
-        if status == "COMPLETED":
+        if status in _SUCCESS_DOC:
             doc.vectorizer_doc_id = ext_doc_id
             ext_ids_completed.append(ext_doc_id)
             logger.info(
-                f"[vectorizer] '{doc.file_name}' COMPLETED "
+                f"[vectorizer] '{doc.file_name}' {status} "
                 f"→ vectorizer_doc_id={ext_doc_id}"
             )
         else:
             logger.warning(
-                f"[vectorizer] '{doc.file_name}' not COMPLETED "
+                f"[vectorizer] '{doc.file_name}' not in terminal success states "
                 f"(status={status!r}) — excluded from Analytical call"
             )
     db.commit()
