@@ -64,9 +64,23 @@ load_env_vars() {
     DB_PASSWORD="${DB_PASSWORD:-sanji}"
     DB_NAME="${DB_NAME:-golden}"
 
-    # Build DATABASE_URL if not already set
+    # Build DATABASE_URL if not already set; or parse it back into components
+    # so psql / pg_isready calls work regardless of which form was provided.
     if [ -z "${DATABASE_URL:-}" ]; then
         DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+    else
+        # Parse DATABASE_URL → individual vars (handles Railway / any remote URL)
+        eval "$(python3 - <<'PYEOF'
+import os, sys
+from urllib.parse import urlparse
+u = urlparse(os.environ["DATABASE_URL"])
+print(f'DB_HOST={u.hostname}')
+print(f'DB_PORT={u.port or 5432}')
+print(f'DB_USER={u.username or ""}')
+print(f'DB_PASSWORD={u.password or ""}')
+print(f'DB_NAME={u.path.lstrip("/")}')
+PYEOF
+        )"
     fi
 
     export DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME DATABASE_URL
