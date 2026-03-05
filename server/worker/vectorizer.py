@@ -348,8 +348,22 @@ def _run_analytical(
                 "instructions": (
                     "Determine whether the investment deal was accepted or rejected. "
                     "Begin your response with exactly 'ACCEPTED:' or 'REJECTED:' "
-                    "(uppercase, including the colon), then provide a 1-2 sentence reason. "
-                    "Example: 'ACCEPTED: Strong financials and experienced management team.'"
+                    "(uppercase, including the colon), then provide 3-4 sentences explaining "
+                    "the decision. Your explanation must cover: (1) the primary commercial or "
+                    "financial rationale — e.g. revenue traction, market size, unit economics, "
+                    "or burn rate; (2) the key risk or concern that most influenced the outcome; "
+                    "(3) one observation about the team, product, or competitive moat; and "
+                    "(4) if accepted, the most important condition or next step, or if rejected, "
+                    "what would need to change for reconsideration. Be specific — cite numbers, "
+                    "names, and metrics from the documents where available. "
+                    "Example: 'ACCEPTED: The company has demonstrated $4.2M ARR growing at "
+                    "180% YoY with healthy 72% gross margins, validating strong product-market "
+                    "fit. The primary risk is customer concentration — the top three clients "
+                    "represent 58% of revenue — which the team must address through pipeline "
+                    "diversification. The founding team brings deep domain expertise with two "
+                    "prior exits in the same vertical, which meaningfully de-risks execution. "
+                    "Investment is contingent on completing the Series A at the agreed $22M cap "
+                    "and receiving clean IP assignment documentation before close.'"
                 ),
                 "reasoning_type": "synthesis",
             },
