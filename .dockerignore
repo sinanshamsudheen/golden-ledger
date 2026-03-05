@@ -1,0 +1,26 @@
+# Ignore everything except the server directory
+*
+!server/
+
+# Within server/, exclude secrets and junk
+server/.env
+server/.env.*
+!server/.env.example
+server/__pycache__/
+server/**/__pycache__/
+server/**/*.pyc
+server/.venv/
+server/venv/
+server/.mypy_cache/
+server/.ruff_cache/
+server/.pytest_cache/
+server/tests/
+server/worker/logs/
+server/*.log
+server/junk/
+server/*.egg-info/
+
+# Git / editor
+.git/
+.gitignore
+frontend/
