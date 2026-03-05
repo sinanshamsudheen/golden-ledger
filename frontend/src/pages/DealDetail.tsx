@@ -192,6 +192,40 @@ const DealDetail = () => {
               </p>
             )}
 
+            {/* Structured fields grouped by section */}
+            {deal.deal_fields && deal.deal_fields.length > 0 && (() => {
+              const sections = ["Opportunity overview", "Key terms"] as const;
+              return (
+                <div className="mt-8 space-y-6">
+                  {sections.map((section) => {
+                    const fields = deal.deal_fields.filter(
+                      (f) => f.section === section && f.value != null
+                    );
+                    if (fields.length === 0) return null;
+                    return (
+                      <div key={section}>
+                        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          {section}
+                        </h2>
+                        <div className="rounded-xl border border-border divide-y divide-border">
+                          {fields.map((f) => (
+                            <div key={f.field_name} className="flex items-start justify-between gap-4 px-4 py-3">
+                              <span className="shrink-0 text-sm text-muted-foreground">
+                                {f.field_label ?? f.field_name}
+                              </span>
+                              <span className="text-right text-sm font-medium text-foreground">
+                                {f.value_formatted ?? f.value}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
             {/* 2×2 document slots */}
             <div className="mt-8 grid gap-4 sm:grid-cols-2">
               {DOC_TYPES.map((type) => {
