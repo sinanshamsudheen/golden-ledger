@@ -37,7 +37,7 @@ if config.config_file_name is not None:
 # ── Target metadata ───────────────────────────────────────────────────────────
 # Import all models here so Alembic can detect schema changes automatically.
 from app.database import Base  # noqa: E402
-from app.models import User, Document  # noqa: E402, F401
+from app.models import User, Document, Deal, DealField  # noqa: E402, F401
 
 target_metadata = Base.metadata
 

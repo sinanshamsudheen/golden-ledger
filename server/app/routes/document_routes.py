@@ -10,6 +10,7 @@ from ..database import get_db
 from ..models.user import User
 from ..models.document import Document
 from ..models.deal import Deal
+from ..models.deal_field import DealField
 from ..services.document_service import get_latest_documents_per_type
 from ..schemas.document_schema import (
     LatestDocumentResponse,
@@ -20,6 +21,7 @@ from ..schemas.document_schema import (
     ArchivedDoc,
     LockedFileDoc,
     LockedFileWithDeal,
+    DealFieldResponse,
 )
 from ..utils.auth import get_current_user
 
@@ -118,8 +120,24 @@ def list_deals(
         .all()
     )
 
+    # Batch-load all deal_fields in one query (avoids N+1)
+    deal_ids = [d.id for d in deals]
+    all_deal_field_rows = (
+        db.query(DealField)
+        .filter(DealField.deal_id.in_(deal_ids))
+        .order_by(DealField.id)
+        .all()
+    ) if deal_ids else []
+    fields_by_deal: dict[int, list[DealField]] = {}
+    for f in all_deal_field_rows:
+        fields_by_deal.setdefault(f.deal_id, []).append(f)
+
     result: list[DealResponse] = []
     for deal in deals:
+        # Hide deals that went through the full pipeline but couldn't be classified
+        if deal.vectorizer_job_id is not None and deal.investment_type is None:
+            continue
+
         docs = (
             db.query(Document)
             .filter(
@@ -185,6 +203,18 @@ def list_deals(
         if _is_minutes_only(current_by_type):
             continue
 
+        deal_fields = [
+            DealFieldResponse(
+                field_name=f.field_name,
+                field_label=f.field_label,
+                field_type=f.field_type,
+                section=f.section,
+                value=f.value,
+                value_formatted=f.value_formatted,
+            )
+            for f in fields_by_deal.get(deal.id, [])
+        ]
+
         result.append(
             DealResponse(
                 id=deal.id,
@@ -195,6 +225,7 @@ def list_deals(
                 investment_type=deal.investment_type,
                 deal_status=deal.deal_status,
                 deal_reason=deal.deal_reason,
+                deal_fields=deal_fields,
                 locked_files=locked,
             )
         )
@@ -219,6 +250,10 @@ def get_deal(
         .first()
     )
     if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    # Hide deals that went through the full pipeline but couldn't be classified
+    if deal.vectorizer_job_id is not None and deal.investment_type is None:
         raise HTTPException(status_code=404, detail="Deal not found")
 
     docs = (
@@ -283,6 +318,23 @@ def get_deal(
     if _is_minutes_only(current_by_type):
         raise HTTPException(status_code=404, detail="Deal not found")
 
+    deal_fields = [
+        DealFieldResponse(
+            field_name=f.field_name,
+            field_label=f.field_label,
+            field_type=f.field_type,
+            section=f.section,
+            value=f.value,
+            value_formatted=f.value_formatted,
+        )
+        for f in (
+            db.query(DealField)
+            .filter(DealField.deal_id == deal.id)
+            .order_by(DealField.id)
+            .all()
+        )
+    ]
+
     return DealResponse(
         id=deal.id,
         name=deal.name,
@@ -292,6 +344,7 @@ def get_deal(
         investment_type=deal.investment_type,
         deal_status=deal.deal_status,
         deal_reason=deal.deal_reason,
+        deal_fields=deal_fields,
         locked_files=locked,
     )
 

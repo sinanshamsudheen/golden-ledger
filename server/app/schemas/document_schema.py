@@ -110,6 +110,21 @@ class LockedFileWithDeal(BaseModel):
     deal_name: Optional[str] = None
 
 
+class DealFieldResponse(BaseModel):
+    """A single structured field extracted for a deal via the ExtractFields API."""
+
+    field_name: str
+    field_label: Optional[str] = None
+    # Original CSV type hint: select | currency | range | text | geography
+    field_type: Optional[str] = None
+    # UI grouping: "Opportunity overview" | "Key terms"
+    section: Optional[str] = None
+    # Raw value as returned by the API (string, or null)
+    value: Optional[str] = None
+    # Human-readable formatted value (falls back to value if not provided)
+    value_formatted: Optional[str] = None
+
+
 class DealResponse(BaseModel):
     """Full deal with its current document slots, archive, and analytical results."""
 
@@ -121,6 +136,8 @@ class DealResponse(BaseModel):
     # Populated by the Analytical endpoint after vectorization
     investment_type: Optional[str] = None   # Fund | Direct | Co-Investment
     deal_status: Optional[str] = None       # accepted | rejected
-    deal_reason: Optional[str] = None       # IC rationale (1-2 sentences)
+    deal_reason: Optional[str] = None       # IC rationale (3-4 sentences)
+    # Structured fields extracted by ExtractFields API (type-specific)
+    deal_fields: list[DealFieldResponse] = []
     # Password-protected files that couldn’t be processed
     locked_files: list[LockedFileDoc] = []

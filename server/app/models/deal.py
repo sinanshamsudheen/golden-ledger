@@ -8,6 +8,7 @@ from ..database import Base
 if TYPE_CHECKING:
     from .user import User
     from .document import Document
+    from .deal_field import DealField
 
 
 class Deal(Base):
@@ -35,3 +36,6 @@ class Deal(Base):
 
     user: Mapped["User"] = relationship("User", back_populates="deals")
     documents: Mapped[list["Document"]] = relationship("Document", back_populates="deal")
+    fields: Mapped[list["DealField"]] = relationship(
+        "DealField", back_populates="deal", cascade="all, delete-orphan"
+    )
