@@ -19,3 +19,4 @@ class User(Base):
     documents: Mapped[list["Document"]] = relationship(  # noqa: F821
         "Document", back_populates="user"
     )
+    deals: Mapped[list["Deal"]] = relationship("Deal", back_populates="user")  # noqa: F821

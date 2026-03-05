@@ -76,7 +76,7 @@ def resolve_folder_id(service, folder_path: str) -> Optional[str]:
 
 def list_files_in_folder(service, folder_id: str) -> List[Dict[str, Any]]:
     """
-    List all supported document files inside a Drive folder.
+    List all supported document files inside a Drive folder (non-recursive).
     Handles Drive API pagination automatically.
     """
     mime_filter = " or ".join(f"mimeType = '{m}'" for m in SUPPORTED_MIME_TYPES)
@@ -100,8 +100,54 @@ def list_files_in_folder(service, folder_id: str) -> List[Dict[str, Any]]:
         if not page_token:
             break
 
-    logger.info(f"Found {len(files)} file(s) in folder '{folder_id}'")
     return files
+
+
+def list_files_recursive(
+    service,
+    folder_id: str,
+    _path_parts: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Recursively list all supported document files in a Drive folder and all its subfolders.
+    Returns a flat list of file metadata dicts, each augmented with a ``folder_path`` key
+    containing the slash-joined ancestor folder names relative to the configured root
+    (e.g. ``"Portfolio/Acme Corp/Q1 2025"``).
+    """
+    path_parts: List[str] = _path_parts or []
+    all_files: List[Dict[str, Any]] = []
+
+    # Files in this folder — stamp each with the current path
+    for f in list_files_in_folder(service, folder_id):
+        f["folder_path"] = "/".join(path_parts)
+        all_files.append(f)
+
+    # Recurse into subfolders, extending the path
+    subfolder_query = (
+        f"'{folder_id}' in parents"
+        " and mimeType = 'application/vnd.google-apps.folder'"
+        " and trashed = false"
+    )
+    page_token: Optional[str] = None
+    while True:
+        response = (
+            service.files()
+            .list(
+                q=subfolder_query,
+                fields="nextPageToken, files(id, name)",
+                pageToken=page_token,
+            )
+            .execute()
+        )
+        for subfolder in response.get("files", []):
+            child_path = path_parts + [subfolder["name"]]
+            all_files.extend(list_files_recursive(service, subfolder["id"], child_path))
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    logger.info(f"Found {len(all_files)} file(s) total under folder '{folder_id}'")
+    return all_files
 
 
 def download_file(service, file_id: str) -> bytes:

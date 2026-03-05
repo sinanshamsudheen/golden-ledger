@@ -61,8 +61,47 @@ export const api = {
   },
 
   getAllDocuments(): Promise<
-    { id: number; file_id: string; type: string; name: string; date: string | null; description: string | null; status: string }[]
+    { id: number; file_id: string; type: string; name: string; date: string | null; description: string | null; status: string; deal_id: number | null; deal_name: string | null; version_status: string }[]
   > {
     return apiFetch("/documents/all");
   },
+
+  getDeals(): Promise<DealResponse[]> {
+    return apiFetch("/documents/deals");
+  },
+
+  getDeal(dealId: number): Promise<DealResponse> {
+    return apiFetch(`/documents/deals/${dealId}`);
+  },
 };
+
+export interface DealDocSlot {
+  id: number;
+  file_id: string;
+  name: string;
+  date: string | null;
+  description: string | null;
+}
+
+export interface DealDocSlots {
+  pitch_deck: DealDocSlot | null;
+  investment_memo: DealDocSlot | null;
+  prescreening_report: DealDocSlot | null;
+  meeting_minutes: DealDocSlot | null;
+}
+
+export interface ArchivedDoc {
+  id: number;
+  file_id: string;
+  type: string;
+  name: string;
+  date: string | null;
+}
+
+export interface DealResponse {
+  id: number;
+  name: string;
+  documents: DealDocSlots;
+  archived: ArchivedDoc[];
+  doc_count: number;
+}

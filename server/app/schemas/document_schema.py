@@ -52,3 +52,48 @@ class AllDocumentResponse(BaseModel):
     date: Optional[str] = None
     description: Optional[str] = None
     status: str
+    deal_id: Optional[int] = None
+    deal_name: Optional[str] = None
+    version_status: str = "current"
+    folder_path: Optional[str] = None
+
+
+# ── Deal-level schemas ────────────────────────────────────────────────────────
+
+class DealDocSlot(BaseModel):
+    """A single document filling one of the 4 type slots in a deal."""
+
+    id: int
+    file_id: str
+    name: str
+    date: Optional[str] = None
+    description: Optional[str] = None
+
+
+class DealDocSlots(BaseModel):
+    """The 4 canonical document type slots for a deal. None = empty slot."""
+
+    pitch_deck: Optional[DealDocSlot] = None
+    investment_memo: Optional[DealDocSlot] = None
+    prescreening_report: Optional[DealDocSlot] = None
+    meeting_minutes: Optional[DealDocSlot] = None
+
+
+class ArchivedDoc(BaseModel):
+    """A superseded document shown in the deal archive."""
+
+    id: int
+    file_id: str
+    type: str
+    name: str
+    date: Optional[str] = None
+
+
+class DealResponse(BaseModel):
+    """Full deal with its current document slots and archive."""
+
+    id: int
+    name: str
+    documents: DealDocSlots
+    archived: list[ArchivedDoc] = []
+    doc_count: int  # number of current (non-archived) documents

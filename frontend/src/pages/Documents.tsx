@@ -1,77 +1,17 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { api } from "@/lib/api";
+import { api, DealResponse } from "@/lib/api";
 import Navbar from "@/components/Navbar";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { FileText, FileType, File, ExternalLink } from "lucide-react";
-
-interface Doc {
-  id: number;
-  file_id: string;
-  type: string;
-  name: string;
-  date: string | null;
-  description: string | null;
-  status: string;
-}
-
-const TYPE_LABELS: Record<string, string> = {
-  pitch_deck: "Pitch Deck",
-  investment_report: "Investment Report",
-  deal_memo: "Deal Memo",
-  financial_report: "Financial Report",
-  other: "Other",
-};
-
-const ALL_TYPES = ["all", ...Object.keys(TYPE_LABELS)];
-
-function getFileIcon(name: string) {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".pdf"))
-    return <FileText className="h-8 w-8" />;
-  if (lower.endsWith(".pptx") || lower.endsWith(".ppt"))
-    return <FileType className="h-8 w-8" />;
-  return <File className="h-8 w-8" />;
-}
-
-function getIconBg(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".pdf")) return "bg-red-500/15 text-red-400";
-  if (lower.endsWith(".pptx") || lower.endsWith(".ppt")) return "bg-amber-500/15 text-amber-400";
-  if (lower.endsWith(".docx") || lower.endsWith(".doc")) return "bg-blue-500/15 text-blue-400";
-  return "bg-muted text-muted-foreground";
-}
-
-function formatName(raw: string): string {
-  return raw.replace(/\.[^/.]+$/, "").replace(/[_-]+/g, " ");
-}
-
-function formatDate(raw: string | null): string {
-  if (!raw) return "—";
-  const d = new Date(raw);
-  if (isNaN(d.getTime())) return raw;
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
-}
-
-function driveUrl(fileId: string): string {
-  return `https://drive.google.com/file/d/${fileId}/view`;
-}
+import { Folder, FolderOpen } from "lucide-react";
 
 const Documents = () => {
   const { user, isLoading } = useAuth();
   const navigate = useNavigate();
-  const [docs, setDocs] = useState<Doc[]>([]);
+  const [deals, setDeals] = useState<DealResponse[]>([]);
   const [fetching, setFetching] = useState(false);
-  const [filter, setFilter] = useState("all");
 
   useEffect(() => {
     if (!isLoading && !user) navigate("/", { replace: true });
@@ -80,121 +20,124 @@ const Documents = () => {
   useEffect(() => {
     if (!user) return;
     setFetching(true);
-    api.getAllDocuments().then(setDocs).catch(() => null).finally(() => setFetching(false));
+    api.getDeals().then(setDeals).catch(() => null).finally(() => setFetching(false));
   }, [user]);
 
   if (isLoading || !user) return null;
 
-  const visible = filter === "all" ? docs : docs.filter((d) => d.type === filter);
+  // Separate deals with docs from ungrouped (deal_count === 0 filtered out server-side,
+  // but the "Uncategorized" pseudo-deal is handled by the backend eventually)
+  const dealsWithDocs = deals.filter((d) => d.doc_count > 0 || d.archived.length > 0);
 
   return (
-    <TooltipProvider>
-      <div className="min-h-screen bg-background">
-        <Navbar />
-        <main className="mx-auto max-w-6xl px-6 pt-24 pb-16">
-          {/* Header */}
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="font-heading text-3xl font-semibold text-foreground">Documents</h1>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {docs.length} processed document{docs.length !== 1 ? "s" : ""}
-              </p>
-            </div>
+    <div className="min-h-screen bg-background">
+      <Navbar />
+      <main className="mx-auto max-w-6xl px-6 pt-24 pb-16">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="font-heading text-3xl font-semibold text-foreground">Deals</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {dealsWithDocs.length} deal{dealsWithDocs.length !== 1 ? "s" : ""}
+            </p>
           </div>
+        </div>
 
-          {/* Filter bar */}
-          <div className="mt-6 flex flex-wrap gap-2">
-            {ALL_TYPES.map((t) => (
-              <Button
-                key={t}
-                variant={filter === t ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilter(t)}
-                className={
-                  filter === t
-                    ? "bg-primary text-primary-foreground"
-                    : "border-border text-muted-foreground hover:text-foreground"
-                }
-              >
-                {t === "all" ? "All" : TYPE_LABELS[t]}
-              </Button>
+        {/* Skeleton */}
+        {fetching && (
+          <div className="mt-8 grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex flex-col gap-3 rounded-xl border border-border p-5">
+                <Skeleton className="h-10 w-10 rounded-lg" />
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-3 w-20" />
+              </div>
             ))}
           </div>
+        )}
 
-          {/* Grid */}
-          <div className="mt-8 grid gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-            {fetching &&
-              Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className="flex flex-col items-center gap-2 p-4">
-                  <Skeleton className="h-16 w-16 rounded-xl" />
-                  <Skeleton className="h-3 w-24" />
-                  <Skeleton className="h-3 w-16" />
-                </div>
-              ))}
+        {/* Empty state */}
+        {!fetching && dealsWithDocs.length === 0 && (
+          <p className="mt-16 text-center text-sm text-muted-foreground">
+            No deals found. Run the worker after configuring your Drive folder.
+          </p>
+        )}
 
-            {!fetching && visible.length === 0 && (
-              <p className="col-span-full pt-12 text-center text-sm text-muted-foreground">
-                No documents found.
-              </p>
-            )}
-
-            {!fetching &&
-              visible.map((doc) => (
-                <Tooltip key={doc.id}>
-                  <TooltipTrigger asChild>
-                    <button
-                      className="group flex cursor-pointer flex-col items-center gap-3 rounded-xl border border-transparent p-4 text-center transition-all duration-150 hover:border-border hover:bg-card focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                      onDoubleClick={() => window.open(driveUrl(doc.file_id), "_blank")}
-                      aria-label={`Open ${doc.name} in Google Drive`}
-                    >
-                      {/* Icon */}
-                      <div
-                        className={`flex h-16 w-16 items-center justify-center rounded-xl ${getIconBg(doc.name)} transition-transform duration-150 group-hover:scale-105`}
-                      >
-                        {getFileIcon(doc.name)}
-                      </div>
-
-                      {/* Name */}
-                      <span className="line-clamp-2 w-full text-xs font-medium text-foreground">
-                        {formatName(doc.name)}
-                      </span>
-
-                      {/* Meta */}
-                      <div className="flex flex-col items-center gap-1">
-                        <Badge
-                          variant="outline"
-                          className="border-primary/30 px-1.5 py-0 text-[10px] text-primary"
-                        >
-                          {TYPE_LABELS[doc.type] ?? doc.type}
-                        </Badge>
-                        <span className="text-[10px] text-muted-foreground">
-                          {formatDate(doc.date)}
-                        </span>
-                      </div>
-
-                      {/* Open link on hover */}
-                      <a
-                        href={driveUrl(doc.file_id)}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="flex items-center gap-1 text-[10px] text-muted-foreground opacity-0 transition-opacity duration-150 group-hover:opacity-100 hover:text-primary"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                        Open in Drive
-                      </a>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="max-w-xs text-xs">
-                    {doc.description ?? doc.name}
-                  </TooltipContent>
-                </Tooltip>
-              ))}
+        {/* Deal folder grid */}
+        {!fetching && dealsWithDocs.length > 0 && (
+          <div className="mt-8 grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+            {dealsWithDocs.map((deal) => (
+              <DealCard key={deal.id} deal={deal} onClick={() => navigate(`/documents/${deal.id}`)} />
+            ))}
           </div>
-        </main>
-      </div>
-    </TooltipProvider>
+        )}
+      </main>
+    </div>
   );
+};
+
+function DealCard({ deal, onClick }: { deal: DealResponse; onClick: () => void }) {
+  const [hovered, setHovered] = useState(false);
+
+  const filledSlots = Object.values(deal.documents).filter(Boolean).length;
+  const totalSlots = 4;
+
+  return (
+    <button
+      className="group flex cursor-pointer flex-col gap-4 rounded-xl border border-border bg-card p-5 text-left transition-all duration-150 hover:border-primary/40 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {/* Folder icon */}
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary transition-colors duration-150 group-hover:bg-primary/20">
+        {hovered ? (
+          <FolderOpen className="h-7 w-7" />
+        ) : (
+          <Folder className="h-7 w-7" />
+        )}
+      </div>
+
+      {/* Deal name */}
+      <div className="flex-1">
+        <p className="font-medium text-foreground line-clamp-2">{deal.name}</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {filledSlots}/{totalSlots} documents
+        </p>
+      </div>
+
+      {/* Doc type badges */}
+      <div className="flex flex-wrap gap-1">
+        {(["pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes"] as const).map(
+          (type) => (
+            <span
+              key={type}
+              className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                deal.documents[type]
+                  ? "bg-primary/15 text-primary"
+                  : "bg-muted text-muted-foreground/50"
+              }`}
+            >
+              {TYPE_SHORT[type]}
+            </span>
+          )
+        )}
+      </div>
+
+      {/* Archive badge */}
+      {deal.archived.length > 0 && (
+        <Badge variant="outline" className="w-fit border-muted text-[10px] text-muted-foreground">
+          {deal.archived.length} archived
+        </Badge>
+      )}
+    </button>
+  );
+}
+
+const TYPE_SHORT: Record<string, string> = {
+  pitch_deck: "Deck",
+  investment_memo: "Memo",
+  prescreening_report: "Pre-screen",
+  meeting_minutes: "Minutes",
 };
 
 export default Documents;

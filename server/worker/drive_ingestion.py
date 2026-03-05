@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.services.drive_service import (
     build_drive_service,
-    list_files_in_folder,
+    list_files_recursive,
     download_file,
 )
 from app.services.document_service import get_document_by_file_id
@@ -56,7 +56,7 @@ def get_unprocessed_files(
 
     try:
         service = build_drive_service(user.refresh_token)
-        all_files = list_files_in_folder(service, user.folder_id)
+        all_files = list_files_recursive(service, user.folder_id)
     except Exception as exc:
         logger.error(f"Drive API error for user {user.id}: {exc}")
         return []

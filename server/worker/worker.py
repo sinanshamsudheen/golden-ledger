@@ -4,22 +4,17 @@ Nightly document processing worker.
 Pipeline (per user):
   1.  Fetch all users from the database
   2.  Skip users without Drive connected or folder configured
-  3.  Identify new (unprocessed) files in the Drive folder
-  4.  For each new file:
-        a. Download content
-        b. Extract text
-        c. Classify document type
-        d. Extract document date
-        e. Generate a short description
-        f. Persist metadata to the database
-  5.  Determine the latest document per type
-  6.  Send those documents to the vectorizer pipeline
+  3.  Identify new (unprocessed) files in the Drive folder (recursively)
+  4.  For each new file: download content + extract text
+  5.  Heuristic pre-filter: classify doc type + resolve deal from folder path
+  6.  Batch LLM analysis for docs that still need it (20 docs per call)
+  7.  Persist all documents (with deal_id) to the database
+  8.  Mark superseded versions within each deal
+  9.  Send latest docs per type to the vectorizer pipeline
 
-Run manually (from project root):
-    python server/worker/worker.py
-
-Or from inside server/:
-    python worker/worker.py
+Run manually:
+    python server/worker/worker.py   (from project root)
+    python worker/worker.py          (from server/)
 
 Scheduled via cron:
     0 2 * * * /path/to/venv/bin/python /path/to/server/worker/worker.py
@@ -29,16 +24,14 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from typing import Optional
 
 # ── Path setup ────────────────────────────────────────────────────────────────
-# server/ is the package root; add it to sys.path so `from app.*` works whether
-# the worker is run from project root or from within server/.
 _SERVER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, _SERVER_DIR)
 
-# Load .env from server/.env (if present) before importing settings
 from dotenv import load_dotenv  # type: ignore
 
 _env_path = os.path.join(_SERVER_DIR, ".env")
@@ -51,7 +44,6 @@ from app.models.user import User
 from app.models.document import Document
 from app.schemas.document_schema import DocumentCreate
 from app.services.document_service import (
-    get_document_by_file_id,
     create_document,
     update_document,
     get_latest_documents_per_type,
@@ -65,7 +57,12 @@ from worker.drive_ingestion import (
 )
 from worker.parser import extract_text
 from worker.classifier import classify_document
+from worker.batch_analyzer import analyze_batch, AnalysisResult
 from worker.summarizer import generate_description
+from worker.deal_resolver import (
+    extract_deal_from_folder_path,
+    get_or_create_deal,
+)
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -74,143 +71,103 @@ logging.basicConfig(
 )
 logger = logging.getLogger("worker")
 
-# ── Date extraction ───────────────────────────────────────────────────────────
-_DATE_PATTERNS = [
-    r"\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})\b",  # DD/MM/YYYY or MM/DD/YYYY
-    r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
-    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
-    r"[\s,]+(\d{1,2})[\s,]+(\d{4})\b",  # Month DD, YYYY
-    r"\b(\d{4})[\/\-](\d{2})[\/\-](\d{2})\b",  # YYYY-MM-DD
-]
 
+# ── Date extraction ───────────────────────────────────────────────────────────
 
 def _extract_doc_date(text: str) -> Optional[datetime]:
     """
     Try to extract a document creation date from its text using regex patterns.
-    Returns a datetime on success, otherwise None.
+    Handles 3 formats with dedicated parsers to avoid group-ordering bugs.
     """
-    for pattern in _DATE_PATTERNS:
-        match = re.search(pattern, text[:2000], re.IGNORECASE)
-        if match:
-            try:
-                return datetime(*[int(g) for g in match.groups() if g and g.isdigit()][:3])
-            except (TypeError, ValueError):
-                continue
+    excerpt = text[:2000]
+
+    # Pattern 1: YYYY-MM-DD
+    m = re.search(r"\b(\d{4})[\/\-](\d{2})[\/\-](\d{2})\b", excerpt)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+
+    # Pattern 2: Month DD, YYYY  (e.g. "March 4, 2026" or "Mar 4 2026")
+    m = re.search(
+        r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+        r"[\s,]+(\d{1,2})[\s,]+(\d{4})\b",
+        excerpt,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            return datetime.strptime(
+                f"{m.group(1)[:3].capitalize()} {m.group(2)} {m.group(3)}", "%b %d %Y"
+            )
+        except ValueError:
+            pass
+
+    # Pattern 3: DD/MM/YYYY or MM/DD/YYYY — treat as MM/DD/YYYY
+    m = re.search(r"\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})\b", excerpt)
+    if m:
+        try:
+            return datetime(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            pass
+
     return None
+
+
+# ── Version management ────────────────────────────────────────────────────────
+
+def _mark_superseded_versions(db, document: Document) -> None:
+    """
+    Mark older documents with the same (user_id, doc_type, deal_id) as superseded.
+    Only runs when deal_id and doc_created_date are both known.
+    """
+    if not document.deal_id or not document.doc_created_date:
+        return
+
+    older = (
+        db.query(Document)
+        .filter(
+            Document.user_id == document.user_id,
+            Document.doc_type == document.doc_type,
+            Document.deal_id == document.deal_id,
+            Document.id != document.id,
+            Document.doc_created_date < document.doc_created_date,
+            Document.version_status == "current",
+        )
+        .all()
+    )
+    for doc in older:
+        doc.version_status = "superseded"
+        logger.info(
+            f"Marked '{doc.file_name}' (id={doc.id}) as superseded by '{document.file_name}'"
+        )
+    if older:
+        db.commit()
 
 
 # ── Vectorizer integration ────────────────────────────────────────────────────
 
 def send_to_vectorizer(document: Document, text: str) -> None:
-    """
-    Placeholder: send a processed document to the external vectorizer pipeline.
-
-    Replace this function body with your actual HTTP call / queue message
-    when the vectorizer endpoint is available.
-
-    Expected payload shape (per PRD §11):
-        {
-            "doc_id":   <int>,
-            "text":     <str>,
-            "metadata": {
-                "doc_type": <str>,
-                "company":  <str | None>,   # extracted from file_name heuristic
-                "date":     <str | None>    # YYYY-MM-DD
-            }
-        }
-    """
+    """Placeholder: send a processed document to the external vectorizer pipeline."""
     date_str = (
-        document.doc_created_date.strftime("%Y-%m-%d")
-        if document.doc_created_date
-        else None
+        document.doc_created_date.strftime("%Y-%m-%d") if document.doc_created_date else None
     )
     payload = {
         "doc_id": document.id,
-        "text": text[:5000],  # truncate for safety
+        "text": text[:5000],
         "metadata": {
             "doc_type": document.doc_type,
-            "company": None,  # TODO: extract from file_name or text
+            "deal_id": document.deal_id,
             "date": date_str,
         },
     }
     logger.info(
-        f"[vectorizer] Sending doc_id={document.id} type={document.doc_type} "
-        f"name='{document.file_name}'"
+        f"[vectorizer] doc_id={document.id} type={document.doc_type} "
+        f"deal_id={document.deal_id} name='{document.file_name}'"
     )
-    # TODO: replace with real call e.g.:
-    # import httpx
-    # httpx.post(VECTORIZER_URL, json=payload, timeout=30)
-    _ = payload  # suppress unused-variable warning
-
-
-# ── Per-file processing ───────────────────────────────────────────────────────
-
-def process_file(
-    db,
-    user: User,
-    file_meta: dict,
-) -> Optional[Document]:
-    """
-    Full processing pipeline for a single Drive file.
-
-    Returns the created/updated Document on success, None on failure.
-    """
-    file_id = file_meta["id"]
-    file_name = file_meta["name"]
-
-    logger.info(f"Processing '{file_name}' ({file_id})")
-
-    # 1. Download
-    content = fetch_file_content(user, file_id)
-    if content is None:
-        logger.error(f"Skipping '{file_name}' – download failed")
-        return None
-
-    checksum = compute_checksum(content)
-    drive_created_time = parse_drive_created_time(file_meta)
-
-    # Create a pending record immediately so a crash doesn't reprocess the file
-    doc_data = DocumentCreate(
-        user_id=user.id,
-        file_id=file_id,
-        file_name=file_name,
-        drive_created_time=drive_created_time,
-        checksum=checksum,
-        status="pending",
-    )
-    document = create_document(db, doc_data)
-
-    try:
-        # 2. Extract text
-        text = extract_text(content, file_name)
-
-        # 3. Classify
-        doc_type = classify_document(text, file_name)
-
-        # 4. Extract date
-        doc_created_date = _extract_doc_date(text) or drive_created_time
-
-        # 5. Summarize
-        description = generate_description(text)
-
-        # 6. Persist results
-        document = update_document(
-            db,
-            document.id,
-            doc_type=doc_type,
-            description=description,
-            doc_created_date=doc_created_date,
-            status="processed",
-        )
-        logger.info(
-            f"Processed '{file_name}' → type={doc_type} date={doc_created_date}"
-        )
-        return document
-
-    except Exception as exc:
-        logger.error(f"Processing failed for '{file_name}': {exc}", exc_info=True)
-        update_document(db, document.id, status="failed")
-        return None
+    _ = payload  # TODO: replace with real HTTP call
 
 
 # ── Per-user pipeline ─────────────────────────────────────────────────────────
@@ -224,22 +181,190 @@ def process_user(db, user: User) -> None:
         logger.info(f"No new files for user {user.id}")
         return
 
-    processed_docs = []
-    for file_meta in new_files:
-        doc = process_file(db, user, file_meta)
-        if doc:
-            processed_docs.append(doc)
+    # ── Step 1: Download + extract text (parallel) ───────────────────────────
+    prepared: list[dict] = []
+
+    def _download_and_extract(file_meta: dict) -> dict | None:
+        file_id = file_meta["id"]
+        file_name = file_meta["name"]
+        folder_path = file_meta.get("folder_path", "")
+
+        content = fetch_file_content(user, file_id)
+        if content is None:
+            logger.error(f"Skipping '{file_name}' – download failed")
+            return None
+
+        try:
+            text = extract_text(content, file_name)
+        except Exception as exc:
+            logger.error(f"Skipping '{file_name}' – text extraction failed: {exc}")
+            return None
+
+        return {
+            "file_meta": file_meta,
+            "content": content,
+            "text": text,
+            "checksum": compute_checksum(content),
+            "drive_created_time": parse_drive_created_time(file_meta),
+            "folder_path": folder_path,
+        }
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_download_and_extract, fm): fm for fm in new_files}
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                prepared.append(result)
+
+    # Restore original ordering (as_completed gives arbitrary order)
+    order = {fm["id"]: idx for idx, fm in enumerate(new_files)}
+    prepared.sort(key=lambda x: order.get(x["file_meta"]["id"], 0))
+
+    if not prepared:
+        return
+
+    # ── Step 2: Heuristic pre-filter ─────────────────────────────────────────
+    needs_llm: list[dict] = []
+    heuristic_results: dict[str, dict] = {}  # file_id → partial result
+
+    for item in prepared:
+        fid = item["file_meta"]["id"]
+        fname = item["file_meta"]["name"]
+        text = item["text"]
+        folder_path = item["folder_path"]
+
+        doc_type, confident = classify_document(text, fname)
+        deal_name_from_folder = extract_deal_from_folder_path(folder_path)
+        doc_date = _extract_doc_date(text)
+
+        if confident and deal_name_from_folder:
+            # Both signals confident — skip LLM
+            heuristic_results[fid] = {
+                "doc_type": doc_type,
+                "deal_name": deal_name_from_folder,
+                "doc_date": doc_date,
+                "summary": None,  # will use fallback summarizer
+            }
+        else:
+            needs_llm.append(
+                {
+                    "custom_id": fid,
+                    "file_name": fname,
+                    "text": text,
+                    "known_deal_name": deal_name_from_folder,  # hint for prompt
+                    "_heuristic_type": doc_type,
+                    "_heuristic_date": doc_date,
+                }
+            )
 
     logger.info(
-        f"User {user.id}: {len(processed_docs)}/{len(new_files)} file(s) processed"
+        f"User {user.id}: {len(heuristic_results)} heuristic-only, "
+        f"{len(needs_llm)} need LLM"
     )
 
-    # ── Step 5-6: select latest per type & vectorize ───────────────────────
+    # ── Step 3: Batch LLM analysis ────────────────────────────────────────────
+    llm_results: dict[str, AnalysisResult] = {}
+    if needs_llm:
+        batch_items = [
+            {
+                "custom_id": d["custom_id"],
+                "file_name": d["file_name"],
+                "text": d["text"],
+                "known_deal_name": d["known_deal_name"],
+            }
+            for d in needs_llm
+        ]
+        analysis = analyze_batch(batch_items)
+        for result in analysis:
+            llm_results[result.custom_id] = result
+
+        # Folder path always wins over LLM for deal name
+        for item in needs_llm:
+            fid = item["custom_id"]
+            res = llm_results.get(fid)
+            if res:
+                if res.doc_date is None:
+                    res.doc_date = item["_heuristic_date"]
+                if item["known_deal_name"]:
+                    res.deal_name = item["known_deal_name"]
+
+    # ── Step 4: Persist all documents ────────────────────────────────────────
+    processed_docs: list[Document] = []
+
+    for item in prepared:
+        fid = item["file_meta"]["id"]
+        fname = item["file_meta"]["name"]
+        folder_path = item["folder_path"]
+
+        doc_data = DocumentCreate(
+            user_id=user.id,
+            file_id=fid,
+            file_name=fname,
+            drive_created_time=item["drive_created_time"],
+            checksum=item["checksum"],
+            status="pending",
+        )
+        document = create_document(db, doc_data)
+
+        try:
+            if fid in heuristic_results:
+                h = heuristic_results[fid]
+                doc_type = h["doc_type"]
+                raw_deal_name: Optional[str] = h["deal_name"]
+                doc_date = h["doc_date"] or item["drive_created_time"]
+                description = generate_description(item["text"])
+            elif fid in llm_results:
+                r = llm_results[fid]
+                doc_type = r.doc_type
+                raw_deal_name = r.deal_name
+                doc_date = r.doc_date or item["drive_created_time"]
+                description = r.summary or generate_description(item["text"])
+            else:
+                doc_type = "pitch_deck"
+                raw_deal_name = extract_deal_from_folder_path(folder_path)
+                doc_date = _extract_doc_date(item["text"]) or item["drive_created_time"]
+                description = generate_description(item["text"])
+
+            # Resolve deal_id
+            deal_id: Optional[int] = None
+            if raw_deal_name:
+                deal = get_or_create_deal(db, user.id, raw_deal_name)
+                deal_id = deal.id if deal else None
+
+            updated = update_document(
+                db,
+                document.id,
+                doc_type=doc_type,
+                description=description,
+                doc_created_date=doc_date,
+                deal_id=deal_id,
+                folder_path=folder_path or None,
+                status="processed",
+            )
+            logger.info(
+                f"Persisted '{fname}' → type={doc_type} deal_id={deal_id} "
+                f"folder='{folder_path}' date={doc_date}"
+            )
+            if updated:
+                processed_docs.append(updated)
+
+        except Exception as exc:
+            logger.error(f"Persist failed for '{fname}': {exc}", exc_info=True)
+            update_document(db, document.id, status="failed")
+
+    logger.info(
+        f"User {user.id}: {len(processed_docs)}/{len(prepared)} file(s) persisted"
+    )
+
+    # ── Step 5: Version management ────────────────────────────────────────────
+    for doc in processed_docs:
+        _mark_superseded_versions(db, doc)
+
+    # ── Step 6: Vectorize latest per type ─────────────────────────────────────
     latest_docs = get_latest_documents_per_type(db, user.id)
-    logger.info(f"User {user.id}: {len(latest_docs)} latest document(s) to vectorize")
+    logger.info(f"User {user.id}: {len(latest_docs)} document(s) to vectorize")
 
     for doc in latest_docs:
-        # Retrieve cached text is not stored, so we re-download only for vectorization
         content = fetch_file_content(user, doc.file_id)
         if content is None:
             logger.warning(f"Cannot vectorize '{doc.file_name}' – download failed")
