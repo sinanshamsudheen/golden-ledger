@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from worker.classifier import VALID_TYPES
+VALID_TYPES = {"pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes", "other"}
 
 logger = logging.getLogger(__name__)
 
