@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/collapsible";
 import { ArrowLeft, ExternalLink, FileText, FileType, File, ChevronDown, Lock, Pencil, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 const TYPE_LABELS: Record<string, string> = {
   pitch_deck: "Pitch Deck",
@@ -71,7 +72,21 @@ function DocSlotCard({ doc, label }: { doc: DealDocSlot; label: string }) {
         <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
         <p className="mt-1 line-clamp-2 text-sm font-medium text-foreground">{formatName(doc.name)}</p>
         {doc.description && (
-          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{doc.description}</p>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <p className="mt-1 line-clamp-2 text-xs text-muted-foreground cursor-default">
+                  {doc.description}
+                </p>
+              </TooltipTrigger>
+              <TooltipContent
+                side="bottom"
+                className="max-w-xs text-xs leading-relaxed"
+              >
+                {doc.description}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         )}
       </div>
       <p className="text-xs text-muted-foreground">{formatDate(doc.date)}</p>
