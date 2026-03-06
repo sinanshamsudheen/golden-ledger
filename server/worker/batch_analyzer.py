@@ -56,6 +56,42 @@ OUTPUT_SCHEMA = """
 }
 """
 
+# ── Default firm context — shown in Settings UI and used when user hasn't set one ──
+DEFAULT_FIRM_CONTEXT = """\
+You are a senior financial analyst at a venture capital firm specializing in deal document intelligence.
+
+PRIMARY OBJECTIVE: Analyze a batch of investment documents and extract structured metadata for each one — doc_type, deal_name, doc_date, and a two-sentence summary.
+
+## DOC TYPE CLASSIFICATION RULES
+Apply in strict order (stop at the first match):
+
+[T1] MEETING MINUTES — IC/Investment Committee only
+- MUST be a formal Investment Committee (IC) session where a deal is deliberated or voted on.
+- Strong signals: "Investment Committee", "IC minutes", "IC meeting", "committee resolution", "investment approved", "investment rejected", "proceed with investment", "pass on deal", "IC recommendation", "voted to invest", "motion carried", "quorum"
+- The document must record a formal DECISION process — not just discussion or an update.
+
+EXCLUDE from `meeting_minutes` — classify as `other` instead:
+- Call notes, call recap, catch-up notes, intro call, exploratory call, reference call
+- Due diligence calls, DD call notes, founder call notes
+- Board updates, management updates, LP updates, quarterly/annual reviews
+- Any meeting that is informational or operational (no investment vote/resolution)
+→ `meeting_minutes`
+
+[T2] PRESCREENING REPORT
+- Contains: initial assessment, first look, deal screening, opportunity overview, "next steps: schedule partner meeting", fund thesis fit
+→ `prescreening_report`
+
+[T3] INVESTMENT MEMO
+- Contains: financial analysis, due diligence, term sheet, investment recommendation, ARR/MRR, unit economics, LTV/CAC, burn rate, cap table, deal memo
+→ `investment_memo`
+
+[T4] PITCH DECK
+- Contains: company overview, funding ask, go-to-market, product pitch, market size, founding team, use of proceeds
+→ `pitch_deck`
+
+DEFAULT: If none match → `other`\
+"""
+
 
 @dataclass
 class AnalysisResult:
@@ -66,21 +102,6 @@ class AnalysisResult:
     summary: Optional[str] = None
     is_client: bool = False
     from_heuristic: bool = False
-
-
-_OUTPUT_SCHEMA_SENTINEL = '"results"'
-
-
-def _maybe_append_schema(prompt: str) -> str:
-    """Append the output schema block if the user's custom prompt omits it."""
-    if _OUTPUT_SCHEMA_SENTINEL not in prompt:
-        schema_block = f"""
-
-OUTPUT SCHEMA (respond with exactly this structure):
-{OUTPUT_SCHEMA.strip()}
-"""
-        return prompt + schema_block
-    return prompt
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -131,15 +152,7 @@ def analyze_batch(
 # ── Chunk processing ──────────────────────────────────────────────────────────
 
 def _analyze_chunk(chunk: list[dict], api_key: str, custom_prompt: Optional[str] = None) -> list[AnalysisResult]:
-    if custom_prompt:
-        docs_block = _build_docs_block(chunk)
-        if "{DOCUMENTS}" in custom_prompt:
-            injected = custom_prompt.replace("{DOCUMENTS}", docs_block)
-        else:
-            injected = custom_prompt + "\n\n" + docs_block
-        prompt = _maybe_append_schema(injected)
-    else:
-        prompt = _build_prompt(chunk)
+    prompt = _build_prompt(chunk, firm_context=custom_prompt)
     try:
         from openai import OpenAI
 
@@ -188,15 +201,15 @@ def _build_docs_block(chunk: list[dict]) -> str:
     return "\n\n".join(sections)
 
 
-def _build_prompt(chunk: list[dict]) -> str:
+def _build_prompt(chunk: list[dict], firm_context: Optional[str] = None) -> str:
     docs_block = _build_docs_block(chunk)
     valid_types_str = " | ".join(sorted(VALID_TYPES))
+    context = (firm_context or DEFAULT_FIRM_CONTEXT).strip()
 
     prompt = f"""\
-You are a senior financial analyst at a venture capital firm specializing in deal document intelligence.
+{context}
 
-PRIMARY OBJECTIVE: Analyze a batch of investment documents and extract structured metadata \
-for each one — doc_type, deal_name, doc_date, and a two-sentence summary.
+Must be exactly one of: `{valid_types_str}`
 
 ## PART 1: OUTPUT SCHEMA
 
@@ -228,42 +241,6 @@ Signals → `false` (new deal / opportunity being evaluated):
 - Data room materials from an external company seeking investment
 
 **When in doubt, default to `false`** (assume deal/opportunity).
-
-### `doc_type`
-Apply in strict order (stop at the first match):
-
-[T1] MEETING MINUTES — IC/Investment Committee only
-- MUST be a formal Investment Committee (IC) session where a deal is deliberated or voted on.
-- Strong signals: "Investment Committee", "IC minutes", "IC meeting", "committee resolution",
-  "investment approved", "investment rejected", "proceed with investment", "pass on deal",
-  "IC recommendation", "voted to invest", "motion carried", "quorum"
-- The document must record a formal DECISION process — not just discussion or an update.
-
-EXCLUDE from `meeting_minutes` — classify as `other` instead:
-- Call notes, call recap, catch-up notes, intro call, exploratory call, reference call
-- Due diligence calls, DD call notes, founder call notes
-- Board updates, management updates, LP updates, quarterly/annual reviews
-- Any meeting that is informational or operational (no investment vote/resolution)
-→ `meeting_minutes`
-
-[T2] PRESCREENING REPORT
-- Contains: initial assessment, first look, deal screening, opportunity overview, \
-"next steps: schedule partner meeting", fund thesis fit
-→ `prescreening_report`
-
-[T3] INVESTMENT MEMO
-- Contains: financial analysis, due diligence, term sheet, investment recommendation, \
-ARR/MRR, unit economics, LTV/CAC, burn rate, cap table, deal memo
-→ `investment_memo`
-
-[T4] PITCH DECK
-- Contains: company overview, funding ask, go-to-market, product pitch, \
-market size, founding team, use of proceeds
-→ `pitch_deck`
-
-DEFAULT: If none match → `other`
-
-Must be exactly one of: `{valid_types_str}`
 
 ### `deal_name`
 - Extract from **document content first** — folder path is supporting context only.

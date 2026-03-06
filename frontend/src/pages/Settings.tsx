@@ -8,34 +8,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 
-const DEFAULT_PROMPT = `You are a senior financial analyst at a venture capital firm specializing in deal document intelligence.
+const DEFAULT_FIRM_CONTEXT = `You are a senior financial analyst at a venture capital firm specializing in deal document intelligence.
 
 PRIMARY OBJECTIVE: Analyze a batch of investment documents and extract structured metadata for each one — doc_type, deal_name, doc_date, and a two-sentence summary.
 
-## FIELD RULES
-
-### \`custom_id\`
-- Copy exactly from the document header: \`--- <custom_id>: filename ---\`
-- Do not modify, truncate, or infer.
-
-### \`is_client\`
-Set to \`true\` if this document belongs to an **existing portfolio company / current client** (a company the fund already manages or has already invested in), NOT a new deal being evaluated.
-
-Signals → \`true\` (existing client/portfolio):
-- Quarterly/annual report, board update, or investor update *from* a portfolio company
-- Folder path contains words like "Portfolio", "Clients", "Current Investments", "Post-Investment", "Active"
-- Operational report, cap table update, or company financials sent *to* investors (no fundraising ask)
-- Governance documents, AGM minutes, or shareholder letters for an already-invested company
-
-Signals → \`false\` (new deal / opportunity being evaluated):
-- Fundraising ask, pitch deck, term sheet, or investment memo for evaluation
-- Prescreening or first-look of a company seeking capital
-- IC meeting minutes discussing *whether* to invest in a new company (formal committee session, not a call recap)
-- Data room materials from an external company seeking investment
-
-**When in doubt, default to \`false\`** (assume deal/opportunity).
-
-### \`doc_type\`
+## DOC TYPE CLASSIFICATION RULES
 Apply in strict order (stop at the first match):
 
 [T1] MEETING MINUTES — IC/Investment Committee only
@@ -62,29 +39,7 @@ EXCLUDE from \`meeting_minutes\` — classify as \`other\` instead:
 - Contains: company overview, funding ask, go-to-market, product pitch, market size, founding team, use of proceeds
 → \`pitch_deck\`
 
-DEFAULT: If none match → \`other\`
-
-### \`deal_name\`
-- Extract from **document content first** — folder path is supporting context only.
-- Return the shortest unambiguous name (max 3 words). Strip legal suffixes (Inc, Ltd, LLC, Corp).
-- Return \`null\` if the deal name cannot be determined with confidence.
-
-### \`doc_date\`
-- Find the date the document was **authored or published** — not dates referenced in the body.
-- Scan: \`Date:\` headers, title pages, opening paragraph, footers.
-- Normalize any format to \`YYYY-MM-DD\` (e.g. "April 4th, 2024" → "2024-04-04").
-- Return \`null\` **only** if no date appears anywhere in the text.
-
-### \`summary\`
-- Exactly **two sentences**.
-- Sentence 1: what the document is and who/what it concerns.
-- Sentence 2: the single most important insight, metric, decision, or next step.
-- Be specific — include numbers, names, outcomes where available.
-- Do not begin with "This document".
-
-## DOCUMENTS TO ANALYZE
-
-{DOCUMENTS}`;
+DEFAULT: If none match → \`other\``;
 
 const Settings = () => {
   const { user, isLoading, refreshUser } = useAuth();
@@ -103,7 +58,7 @@ const Settings = () => {
   useEffect(() => {
     if (user) {
       setCompanyName(user.company_name ?? "");
-      setCustomPrompt(user.custom_prompt ?? DEFAULT_PROMPT);
+      setCustomPrompt(user.custom_prompt ?? DEFAULT_FIRM_CONTEXT);
     }
   }, [user]);
 
@@ -130,7 +85,7 @@ const Settings = () => {
     setIsSavingPrompt(true);
     try {
       const value = customPrompt.trim();
-      await api.updateProfile({ custom_prompt: value === DEFAULT_PROMPT.trim() ? null : value || null });
+      await api.updateProfile({ custom_prompt: value === DEFAULT_FIRM_CONTEXT.trim() ? null : value || null });
       await refreshUser();
       toast({ title: "Prompt saved" });
     } catch (err: unknown) {
@@ -174,19 +129,19 @@ const Settings = () => {
           </div>
         </section>
 
-        {/* Custom Analysis Prompt */}
+        {/* Firm Context & Classification Rules */}
         <section className="mt-10">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="font-heading text-lg font-medium text-foreground">Analysis Prompt</h2>
+              <h2 className="font-heading text-lg font-medium text-foreground">Firm Context &amp; Classification Rules</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                Customize the prompt used when classifying your documents. <code className="text-xs">{"{DOCUMENTS}"}</code> is replaced with the actual document text at runtime.
+                Customize your firm's role and how documents are classified. Output format, field rules, and examples are managed automatically.
               </p>
             </div>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setCustomPrompt(DEFAULT_PROMPT)}
+              onClick={() => setCustomPrompt(DEFAULT_FIRM_CONTEXT)}
               className="shrink-0 border-border text-muted-foreground hover:text-foreground"
             >
               Reset to Default
@@ -195,7 +150,7 @@ const Settings = () => {
           <Textarea
             value={customPrompt}
             onChange={(e) => setCustomPrompt(e.target.value)}
-            rows={22}
+            rows={28}
             className="mt-4 border-border bg-background font-mono text-sm text-foreground"
           />
           <div className="mt-3 flex justify-end">
