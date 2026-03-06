@@ -25,7 +25,9 @@ import logging
 import os
 import sys
 import tempfile
+import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Optional
 
 import sqlalchemy
@@ -92,9 +94,30 @@ _root.addHandler(_fh)
 logger = logging.getLogger("worker")
 logger.info(f"Logging to {_log_file}")
 
+# ── Per-user run statistics ───────────────────────────────────────────────────
+
+@dataclass
+class _RunStats:
+    user_id: int
+    new_files_found: int = 0
+    downloaded: int = 0          # successfully downloaded + extracted
+    download_failed: int = 0     # download or extraction error
+    password_protected: int = 0
+    skipped_client: int = 0
+    skipped_other: int = 0
+    persisted: int = 0           # status=processed
+    persist_failed: int = 0
+    superseded: int = 0          # marked superseded by version management
+    retired_deals: int = 0       # meeting-minutes-only deals retired
+    deals_vectorized: int = 0    # deals sent to vectorizer this run
+    docs_already_vectorized: int = 0
+    dealless_skipped: int = 0
+    elapsed_seconds: float = 0.0
+
+
 # ── Version management ────────────────────────────────────────────────────────
 
-def _bulk_mark_superseded(db, processed_docs: list) -> None:
+def _bulk_mark_superseded(db, processed_docs: list) -> int:
     """
     Mark older documents as superseded in bulk — one UPDATE per (user_id, doc_type, group)
     instead of one SELECT + commit per document.
@@ -168,11 +191,12 @@ def _bulk_mark_superseded(db, processed_docs: list) -> None:
     if total_superseded:
         db.commit()
         logger.info(f"Bulk supersede: marked {total_superseded} document(s) as superseded")
+    return total_superseded  # always int (0 when nothing was superseded)
 
 
 # ── Per-user pipeline ─────────────────────────────────────────────────────────
 
-def process_user(db, user: User) -> None:
+def process_user(db, user: User) -> _RunStats:
     """
     Run the full ingestion pipeline for a single user.
 
@@ -180,13 +204,20 @@ def process_user(db, user: User) -> None:
     peak RAM.  Credentials are fetched once and reused across all downloads
     to avoid an OAuth round-trip per file.  Version management and
     vectorization run once after all batches for a consistent final state.
+
+    Returns a _RunStats with per-user counters for the final summary.
     """
+    stats = _RunStats(user_id=user.id)
+    _t0 = _time.monotonic()
     logger.info(f"── Starting pipeline for user {user.id} ({user.email})")
 
     new_files = get_unprocessed_files(db, user)
     if not new_files:
         logger.info(f"No new files for user {user.id}")
-        return
+        stats.elapsed_seconds = _time.monotonic() - _t0
+        return stats
+
+    stats.new_files_found = len(new_files)
 
     # Get credentials once — shared across all download threads so the OAuth
     # token is refreshed exactly once, not once per file.
@@ -254,6 +285,9 @@ def process_user(db, user: User) -> None:
                 result = future.result()
                 if result is not None:
                     prepared.append(result)
+                    stats.downloaded += 1
+                else:
+                    stats.download_failed += 1
 
         # Restore batch ordering (as_completed returns in completion order)
         order = {fm["id"]: idx for idx, fm in enumerate(batch)}
@@ -340,6 +374,7 @@ def process_user(db, user: User) -> None:
                 logger.info(
                     f"Flagged '{fname}' as password-protected — deal_id={locked_deal_id}"
                 )
+                stats.password_protected += 1
                 continue
 
             doc_data = DocumentCreate(
@@ -379,6 +414,7 @@ def process_user(db, user: User) -> None:
                         status="skipped",
                     )
                     logger.info(f"Skipped '{fname}' — identified as client/portfolio file")
+                    stats.skipped_client += 1
                     continue
 
                 # Unrelated documents: store a permanent tombstone so this
@@ -396,6 +432,7 @@ def process_user(db, user: User) -> None:
                         status="skipped",
                     )
                     logger.info(f"Skipped '{fname}' — unrelated document (type=other)")
+                    stats.skipped_other += 1
                     continue
 
                 deal_id: Optional[int] = None
@@ -420,10 +457,12 @@ def process_user(db, user: User) -> None:
                 if updated:
                     all_processed_docs.append(updated)
                     batch_persisted += 1
+                    stats.persisted += 1
 
             except Exception as exc:
                 logger.error(f"Persist failed for '{fname}': {exc}", exc_info=True)
                 update_document(db, document.id, status="failed")
+                stats.persist_failed += 1
 
         logger.info(
             f"User {user.id}: batch {batch_num}/{total_batches} complete "
@@ -436,7 +475,7 @@ def process_user(db, user: User) -> None:
     # ── Step 4: Version management (once, after all batches) ─────────────────
     # Running after all docs are persisted is more correct: the full date
     # picture is visible, so older duplicates across batch boundaries are caught.
-    _bulk_mark_superseded(db, all_processed_docs)
+    stats.superseded = _bulk_mark_superseded(db, all_processed_docs)
 
     # ── Step 4.5: Retire meeting-minutes-only deals ───────────────────────────
     # A deal whose only classified documents are meeting_minutes is a
@@ -482,6 +521,7 @@ def process_user(db, user: User) -> None:
             all_processed_docs = [
                 d for d in all_processed_docs if d.deal_id not in minutes_only_ids
             ]
+            stats.retired_deals += len(minutes_only_ids)
             logger.info(
                 f"User {user.id}: retired {len(minutes_only_ids)} "
                 f"meeting-minutes-only deal(s) — {sum(len(by_deal[i]) for i in minutes_only_ids)} doc(s) marked client/skipped"
@@ -492,7 +532,8 @@ def process_user(db, user: User) -> None:
         logger.info(
             f"User {user.id}: VECTORIZER_INGEST_URL not configured — skipping vectorization"
         )
-        return
+        stats.elapsed_seconds = _time.monotonic() - _t0
+        return stats
 
     latest_docs = get_latest_documents_per_type(db, user.id)
 
@@ -512,6 +553,9 @@ def process_user(db, user: User) -> None:
         else:
             per_deal_docs.setdefault(doc.deal_id, []).append(doc)
 
+    stats.deals_vectorized = len(per_deal_docs)
+    stats.docs_already_vectorized = already_vectorized_count
+    stats.dealless_skipped = dealless_count
     logger.info(
         f"User {user.id}: {len(per_deal_docs)} deal(s) need vectorization "
         f"({already_vectorized_count} doc(s) already vectorized, "
@@ -538,18 +582,21 @@ def process_user(db, user: User) -> None:
                     exc_info=exc,
                 )
 
+    stats.elapsed_seconds = _time.monotonic() - _t0
+    return stats
+
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def _process_user_isolated(user_id: int) -> None:
+def _process_user_isolated(user_id: int) -> Optional[_RunStats]:
     """Process a single user in an isolated DB session (safe for threads)."""
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
         if user is None:
             logger.warning(f"User {user_id} not found — skipping")
-            return
-        process_user(db, user)
+            return None
+        return process_user(db, user)
     except Exception as exc:
         logger.error(
             f"Unhandled error for user {user_id}: {exc}",
@@ -622,6 +669,7 @@ def run() -> None:
 
 def _run() -> None:
     """Inner run — called only when the exclusive lock is held."""
+    run_start = _time.monotonic()
     logger.info("═══ Golden Ledger nightly worker started ═══")
     db = SessionLocal()
     try:
@@ -637,6 +685,7 @@ def _run() -> None:
     logger.info(f"Found {len(user_ids)} user(s) — processing in parallel (max 5 threads)")
     max_workers = min(len(user_ids), 5)
 
+    all_stats: list[_RunStats] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(_process_user_isolated, uid): uid for uid in user_ids}
         for future in as_completed(futures):
@@ -645,7 +694,58 @@ def _run() -> None:
             if exc:
                 logger.error(f"Thread for user {uid} raised: {exc}", exc_info=exc)
             else:
+                result = future.result()
+                if result is not None:
+                    all_stats.append(result)
                 logger.info(f"User {uid} processed successfully")
+
+    # ── Final run summary ─────────────────────────────────────────────────────
+    total_elapsed = _time.monotonic() - run_start
+    mins, secs = divmod(int(total_elapsed), 60)
+
+    if all_stats:
+        t_found       = sum(s.new_files_found for s in all_stats)
+        t_downloaded  = sum(s.downloaded for s in all_stats)
+        t_dl_failed   = sum(s.download_failed for s in all_stats)
+        t_persisted   = sum(s.persisted for s in all_stats)
+        t_p_failed    = sum(s.persist_failed for s in all_stats)
+        t_locked      = sum(s.password_protected for s in all_stats)
+        t_client      = sum(s.skipped_client for s in all_stats)
+        t_other       = sum(s.skipped_other for s in all_stats)
+        t_superseded  = sum(s.superseded for s in all_stats)
+        t_retired     = sum(s.retired_deals for s in all_stats)
+        t_vec         = sum(s.deals_vectorized for s in all_stats)
+        t_already_vec = sum(s.docs_already_vectorized for s in all_stats)
+        t_dealless    = sum(s.dealless_skipped for s in all_stats)
+
+        logger.info(
+            "\n"
+            "╔══════════════════════════════════════════════════════╗\n"
+            "║              WORKER RUN SUMMARY                     ║\n"
+            "╠══════════════════════════════════════════════════════╣\n"
+            f"║  Users processed       : {len(all_stats):<27}║\n"
+            f"║  Total elapsed         : {f'{mins}m {secs}s':<27}║\n"
+            "╠══════════════════════════════════════════════════════╣\n"
+            f"║  New files found       : {t_found:<27}║\n"
+            f"║  Downloaded & parsed   : {t_downloaded:<27}║\n"
+            f"║  Download failures     : {t_dl_failed:<27}║\n"
+            "╠══════════════════════════════════════════════════════╣\n"
+            f"║  Persisted (processed) : {t_persisted:<27}║\n"
+            f"║  Persist failures      : {t_p_failed:<27}║\n"
+            f"║  Password-protected    : {t_locked:<27}║\n"
+            f"║  Skipped (client)      : {t_client:<27}║\n"
+            f"║  Skipped (other)       : {t_other:<27}║\n"
+            "╠══════════════════════════════════════════════════════╣\n"
+            f"║  Versions superseded   : {t_superseded:<27}║\n"
+            f"║  Deals retired (mins)  : {t_retired:<27}║\n"
+            "╠══════════════════════════════════════════════════════╣\n"
+            f"║  Deals vectorized      : {t_vec:<27}║\n"
+            f"║  Docs already vec'd    : {t_already_vec:<27}║\n"
+            f"║  Dealless docs skipped : {t_dealless:<27}║\n"
+            "╚══════════════════════════════════════════════════════╝"
+        )
+    else:
+        logger.info(f"No stats collected (elapsed: {mins}m {secs}s)")
 
     logger.info("═══ Worker run complete ═══")
 
