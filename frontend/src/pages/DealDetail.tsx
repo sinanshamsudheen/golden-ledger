@@ -115,6 +115,7 @@ const DealDetail = () => {
   const [deal, setDeal] = useState<DealResponse | null>(null);
   const [fetching, setFetching] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveFilter, setArchiveFilter] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isLoading && !user) navigate("/", { replace: true });
@@ -267,10 +268,40 @@ const DealDetail = () => {
                   Archive ({deal.archived.length})
                 </CollapsibleTrigger>
                 <CollapsibleContent className="mt-3">
-                  <div className="rounded-xl border border-border divide-y divide-border">
-                    {deal.archived.map((doc) => (
-                      <ArchivedRow key={doc.id} doc={doc} />
+                  {/* Doc type filter pills */}
+                  <div className="mb-3 flex flex-wrap gap-1.5">
+                    <button
+                      onClick={() => setArchiveFilter(null)}
+                      className={cn(
+                        "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                        archiveFilter === null
+                          ? "bg-primary/15 text-primary"
+                          : "bg-muted text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      All
+                    </button>
+                    {DOC_TYPES.map((type) => (
+                      <button
+                        key={type}
+                        onClick={() => setArchiveFilter(archiveFilter === type ? null : type)}
+                        className={cn(
+                          "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                          archiveFilter === type
+                            ? "bg-primary/15 text-primary"
+                            : "bg-muted text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        {TYPE_LABELS[type]}
+                      </button>
                     ))}
+                  </div>
+                  <div className="rounded-xl border border-border divide-y divide-border">
+                    {deal.archived
+                      .filter((doc) => archiveFilter === null || doc.type === archiveFilter)
+                      .map((doc) => (
+                        <ArchivedRow key={doc.id} doc={doc} />
+                      ))}
                   </div>
                 </CollapsibleContent>
               </Collapsible>

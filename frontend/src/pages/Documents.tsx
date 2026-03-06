@@ -6,7 +6,15 @@ import Navbar from "@/components/Navbar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { Folder, FolderOpen, Search } from "lucide-react";
+
+const FILL_FILTERS = [
+  { label: "25%", slots: 1 },
+  { label: "50%", slots: 2 },
+  { label: "75%", slots: 3 },
+  { label: "100%", slots: 4 },
+] as const;
 
 const Documents = () => {
   const { user, isLoading } = useAuth();
@@ -14,6 +22,7 @@ const Documents = () => {
   const [deals, setDeals] = useState<DealResponse[]>([]);
   const [fetching, setFetching] = useState(false);
   const [query, setQuery] = useState("");
+  const [fillFilter, setFillFilter] = useState<number | null>(null);
 
   useEffect(() => {
     if (!isLoading && !user) navigate("/", { replace: true });
@@ -27,21 +36,13 @@ const Documents = () => {
 
   if (isLoading || !user) return null;
 
-  // Separate deals with docs from ungrouped (deal_count === 0 filtered out server-side,
-  // but the "Uncategorized" pseudo-deal is handled by the backend eventually)
   const dealsWithDocs = deals
     .filter((d) => d.doc_count > 0 || d.archived.length > 0)
-    .sort((a, b) => {
-      const filledA = Object.values(a.documents).filter(Boolean).length;
-      const filledB = Object.values(b.documents).filter(Boolean).length;
-      return filledB - filledA; // most complete first
-    });
+    .sort((a, b) => a.name.localeCompare(b.name));
 
-  const filtered = query.trim()
-    ? dealsWithDocs.filter((d) =>
-        d.name.toLowerCase().includes(query.trim().toLowerCase())
-      )
-    : dealsWithDocs;
+  const filtered = dealsWithDocs
+    .filter((d) => !query.trim() || d.name.toLowerCase().includes(query.trim().toLowerCase()))
+    .filter((d) => fillFilter === null || Object.values(d.documents).filter(Boolean).length === fillFilter);
 
   return (
     <div className="min-h-screen bg-background">
@@ -54,17 +55,36 @@ const Documents = () => {
               {user.company_name && (
                 <span className="font-medium text-foreground">{user.company_name} · </span>
               )}
-              {filtered.length}{query.trim() ? ` of ${dealsWithDocs.length}` : ""} deal{dealsWithDocs.length !== 1 ? "s" : ""}
+              {filtered.length}{(query.trim() || fillFilter !== null) ? ` of ${dealsWithDocs.length}` : ""} deal{dealsWithDocs.length !== 1 ? "s" : ""}
             </p>
           </div>
-          <div className="relative w-full sm:w-64">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-            <Input
-              placeholder="Search deals…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="pl-9"
-            />
+          <div className="flex items-center gap-3">
+            {/* Fill filter pills */}
+            <div className="flex items-center gap-1.5">
+              {FILL_FILTERS.map(({ label, slots }) => (
+                <button
+                  key={slots}
+                  onClick={() => setFillFilter(fillFilter === slots ? null : slots)}
+                  className={cn(
+                    "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                    fillFilter === slots
+                      ? "bg-primary/15 text-primary"
+                      : "bg-muted text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="relative w-full sm:w-56">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              <Input
+                placeholder="Search deals…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
           </div>
         </div>
 
