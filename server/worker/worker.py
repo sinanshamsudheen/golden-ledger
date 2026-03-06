@@ -91,7 +91,7 @@ _root.addHandler(_fh)
 logger = logging.getLogger("worker")
 logger.info(f"Logging to {_log_file}")
 
-INGEST_BATCH = 100  # max files per download → LLM → persist cycle — caps peak RAM
+INGEST_BATCH = 500  # max files per download → LLM → persist cycle — caps peak RAM
 
 # ── Version management ────────────────────────────────────────────────────────
 
@@ -228,7 +228,7 @@ def process_user(db, user: User) -> None:
                 "folder_path": folder_path,
             }
 
-        with ThreadPoolExecutor(max_workers=10) as pool:
+        with ThreadPoolExecutor(max_workers=20) as pool:
             futures = {pool.submit(_download_and_extract, fm): fm for fm in batch}
             for future in as_completed(futures):
                 result = future.result()
@@ -502,7 +502,7 @@ def process_user(db, user: User) -> None:
         (user.id, deal_id, [d.id for d in deal_doc_list])
         for deal_id, deal_doc_list in per_deal_docs.items()
     ]
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="vec") as pool:
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="vec") as pool:
         futures = {
             pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
             for uid, did, doc_ids in deal_tasks
@@ -556,8 +556,19 @@ def _vectorize_deal_isolated(user_id: int, deal_id: int, doc_ids: list[int]) -> 
         if not docs:
             return
         ingest_and_analyze_deal(db, user, deal, docs)
-        for doc in docs:
-            update_document(db, doc.id, status="vectorized")
+        # Re-query docs so we see the vectorizer_doc_id values committed by
+        # ingest_and_analyze_deal.  Only mark a doc 'vectorized' when it
+        # actually received an external doc ID — failed docs stay 'processed'
+        # so they are retried on the next worker run.
+        fresh_docs = db.query(Document).filter(Document.id.in_(doc_ids)).all()
+        for doc in fresh_docs:
+            if doc.vectorizer_doc_id is not None:
+                update_document(db, doc.id, status="vectorized")
+            else:
+                logger.warning(
+                    f"[vectorizer] Deal {deal_id}: doc {doc.id} ('{doc.file_name}') "
+                    f"has no vectorizer_doc_id — leaving status='{doc.status}' for retry"
+                )
     except Exception as exc:
         logger.error(
             f"Vectorization failed for deal {deal_id}: {exc}",
@@ -651,7 +662,7 @@ def run_vectorizer_only() -> None:
             db.close()
 
         # Run all deals in parallel; each opens its own session
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="vec") as pool:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="vec") as pool:
             futures = {
                 pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
                 for did, doc_ids in per_deal.items()

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BACKOFF = (5.0, 15.0, 30.0)   # wait (seconds) before attempt n+1
 
-CHUNK_SIZE = 20          # docs per LLM call
+CHUNK_SIZE = 30          # docs per LLM call
 TEXT_LIMIT = 1500        # chars of text sent per doc to LLM
 _FALLBACK_TYPE = "pitch_deck"
 
@@ -113,7 +113,7 @@ def _analyze_chunk(chunk: list[dict], api_key: str) -> list[AnalysisResult]:
 
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
