@@ -550,10 +550,14 @@ def process_user(db, user: User) -> _RunStats:
 
     # Run all deals in parallel — each gets its own DB session via
     # _vectorize_deal_isolated so sessions are never shared across threads.
-    deal_tasks = [
-        (user.id, deal_id, [d.id for d in deal_doc_list])
-        for deal_id, deal_doc_list in per_deal_docs.items()
-    ]
+    deal_tasks = sorted(
+        [
+            (user.id, deal_id, [d.id for d in deal_doc_list])
+            for deal_id, deal_doc_list in per_deal_docs.items()
+        ],
+        key=lambda t: len(t[2]),
+        reverse=True,
+    )
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="vec") as pool:
         futures = {
             pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
@@ -844,12 +848,14 @@ def run_vectorizer_only() -> None:
         finally:
             db.close()
 
-        # Case A — full Stage 1-7
+        # Case A — full Stage 1-7 (most docs first)
         if per_deal_unvec:
             with ThreadPoolExecutor(max_workers=1, thread_name_prefix="vec") as pool:
                 futures = {
                     pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
-                    for did, doc_ids in per_deal_unvec.items()
+                    for did, doc_ids in sorted(
+                        per_deal_unvec.items(), key=lambda kv: len(kv[1]), reverse=True
+                    )
                 }
                 for future in as_completed(futures):
                     deal_id = futures[future]
