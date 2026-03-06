@@ -1,7 +1,7 @@
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -67,8 +67,10 @@ def all_documents(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    limit: int = Query(default=500, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
 ) -> List[AllDocumentResponse]:
-    """Return all processed documents for the current user."""
+    """Return processed documents for the current user (paginated, default 500)."""
     docs = (
         db.query(Document)
         .filter(
@@ -76,6 +78,8 @@ def all_documents(
             Document.status.in_(["processed", "vectorized"]),
         )
         .order_by(Document.created_at.desc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
     return [
@@ -102,9 +106,11 @@ def list_deals(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
 ) -> List[DealResponse]:
     """
-    Return all deals for the current user, each with:
+    Return deals for the current user (paginated, default 200), each with:
     - documents: the 4 canonical type slots (current versions only)
     - archived: superseded documents
     """
@@ -112,6 +118,8 @@ def list_deals(
         db.query(Deal)
         .filter(Deal.user_id == current_user.id)
         .order_by(Deal.name)
+        .offset(offset)
+        .limit(limit)
         .all()
     )
 
@@ -350,8 +358,10 @@ def locked_files(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    limit: int = Query(default=500, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
 ) -> List[LockedFileWithDeal]:
-    """Return all password-protected files for the current user, enriched with deal name."""
+    """Return password-protected files for the current user (paginated, default 500)."""
     docs = (
         db.query(Document)
         .filter(
@@ -359,6 +369,8 @@ def locked_files(
             Document.doc_type == "password_protected",
         )
         .order_by(Document.id)
+        .offset(offset)
+        .limit(limit)
         .all()
     )
 

@@ -49,9 +49,7 @@ from app.database import SessionLocal, engine
 from app.models.user import User
 from app.models.document import Document
 from app.models.deal import Deal
-from app.schemas.document_schema import DocumentCreate
 from app.services.document_service import (
-    create_document,
     update_document,
     get_latest_documents_per_type,
 )
@@ -347,121 +345,109 @@ def process_user(db, user: User) -> _RunStats:
 
             # ── Password-protected: persist tombstone, infer deal from folder path ──
             if item.get("password_protected"):
-                doc_data = DocumentCreate(
-                    user_id=user.id,
-                    file_id=fid,
-                    file_name=fname,
-                    drive_created_time=item["drive_created_time"],
-                    checksum=item["checksum"],
-                    status="pending",
-                )
-                document = create_document(db, doc_data)
-                # Infer deal from first folder component (e.g. "Acme Corp/Q1" → "Acme Corp")
-                locked_deal_id: Optional[int] = None
-                if folder_path:
-                    hint = folder_path.split("/")[0].strip()
-                    if hint:
-                        d = get_or_create_deal(db, user.id, hint, existing_deals)
-                        locked_deal_id = d.id if d else None
-                update_document(
-                    db,
-                    document.id,
-                    doc_type="password_protected",
-                    folder_path=folder_path or None,
-                    deal_id=locked_deal_id,
-                    status="skipped",
-                )
-                logger.info(
-                    f"Flagged '{fname}' as password-protected — deal_id={locked_deal_id}"
-                )
-                stats.password_protected += 1
+                try:
+                    # Single atomic transaction: INSERT + classify in one commit
+                    doc = Document(
+                        user_id=user.id,
+                        file_id=fid,
+                        file_name=fname,
+                        drive_created_time=item["drive_created_time"],
+                        checksum=item["checksum"],
+                        doc_type="password_protected",
+                        folder_path=folder_path or None,
+                        status="skipped",
+                    )
+                    # Infer deal from first folder component (e.g. "Acme Corp/Q1" → "Acme Corp")
+                    locked_deal_id: Optional[int] = None
+                    if folder_path:
+                        hint = folder_path.split("/")[0].strip()
+                        if hint:
+                            d = get_or_create_deal(db, user.id, hint, existing_deals)
+                            locked_deal_id = d.id if d else None
+                    doc.deal_id = locked_deal_id
+                    db.add(doc)
+                    db.commit()
+                    db.refresh(doc)
+                    logger.info(
+                        f"Flagged '{fname}' as password-protected — deal_id={locked_deal_id}"
+                    )
+                    stats.password_protected += 1
+                except Exception as exc:
+                    logger.error(f"Persist failed for locked '{fname}': {exc}", exc_info=True)
+                    db.rollback()
+                    stats.persist_failed += 1
                 continue
 
-            doc_data = DocumentCreate(
-                user_id=user.id,
-                file_id=fid,
-                file_name=fname,
-                drive_created_time=item["drive_created_time"],
-                checksum=item["checksum"],
-                status="pending",
-            )
-            document = create_document(db, doc_data)
-
             try:
+                # ── Resolve classification fields before touching the DB ──────
                 if fid in llm_results:
                     r = llm_results[fid]
                     doc_type = r.doc_type
                     raw_deal_name: Optional[str] = r.deal_name
                     doc_date = r.doc_date or item["drive_created_time"]
                     description = r.summary or text_summary(item["text"])
+                    is_client = r.is_client
                 else:
                     # LLM unavailable — store with safe defaults
                     doc_type = "pitch_deck"
                     raw_deal_name = None
                     doc_date = item["drive_created_time"]
                     description = text_summary(item["text"])
+                    is_client = False
 
-                # Client/portfolio file: store tombstone so it's never re-downloaded,
-                # but exclude it from all deal processing and vectorization.
-                if fid in llm_results and llm_results[fid].is_client:
-                    update_document(
-                        db,
-                        document.id,
-                        doc_type="client",
-                        description=description,
-                        doc_created_date=doc_date,
-                        folder_path=folder_path or None,
-                        status="skipped",
-                    )
-                    logger.info(f"Skipped '{fname}' — identified as client/portfolio file")
-                    stats.skipped_client += 1
-                    continue
+                # Determine final status and deal_id before any DB write
+                if is_client:
+                    final_status = "skipped"
+                    final_type = "client"
+                    deal_id = None
+                elif doc_type == "other":
+                    final_status = "skipped"
+                    final_type = "other"
+                    deal_id = None
+                else:
+                    final_status = "processed"
+                    final_type = doc_type
+                    deal_id = None
+                    if raw_deal_name:
+                        deal = get_or_create_deal(db, user.id, raw_deal_name, existing_deals)
+                        deal_id = deal.id if deal else None
 
-                # Unrelated documents: store a permanent tombstone so this
-                # file_id stays in known_ids and is never re-downloaded on
-                # any future run. These rows are invisible to all API queries
-                # and are never passed to the vectorizer.
-                if doc_type == "other":
-                    update_document(
-                        db,
-                        document.id,
-                        doc_type="other",
-                        description=description,
-                        doc_created_date=doc_date,
-                        folder_path=folder_path or None,
-                        status="skipped",
-                    )
-                    logger.info(f"Skipped '{fname}' — unrelated document (type=other)")
-                    stats.skipped_other += 1
-                    continue
-
-                deal_id: Optional[int] = None
-                if raw_deal_name:
-                    deal = get_or_create_deal(db, user.id, raw_deal_name, existing_deals)
-                    deal_id = deal.id if deal else None
-
-                updated = update_document(
-                    db,
-                    document.id,
-                    doc_type=doc_type,
+                # Single atomic INSERT — create + classify in one commit
+                doc = Document(
+                    user_id=user.id,
+                    file_id=fid,
+                    file_name=fname,
+                    drive_created_time=item["drive_created_time"],
+                    checksum=item["checksum"],
+                    doc_type=final_type,
                     description=description,
                     doc_created_date=doc_date,
                     deal_id=deal_id,
                     folder_path=folder_path or None,
-                    status="processed",
+                    status=final_status,
                 )
-                logger.info(
-                    f"Persisted '{fname}' → type={doc_type} deal_id={deal_id} "
-                    f"folder='{folder_path}' date={doc_date}"
-                )
-                if updated:
-                    all_processed_docs.append(updated)
+                db.add(doc)
+                db.commit()
+                db.refresh(doc)
+
+                if is_client:
+                    logger.info(f"Skipped '{fname}' — identified as client/portfolio file")
+                    stats.skipped_client += 1
+                elif final_type == "other":
+                    logger.info(f"Skipped '{fname}' — unrelated document (type=other)")
+                    stats.skipped_other += 1
+                else:
+                    logger.info(
+                        f"Persisted '{fname}' → type={final_type} deal_id={deal_id} "
+                        f"folder='{folder_path}' date={doc_date}"
+                    )
+                    all_processed_docs.append(doc)
                     batch_persisted += 1
                     stats.persisted += 1
 
             except Exception as exc:
                 logger.error(f"Persist failed for '{fname}': {exc}", exc_info=True)
-                update_document(db, document.id, status="failed")
+                db.rollback()
                 stats.persist_failed += 1
 
         logger.info(
@@ -624,7 +610,36 @@ def _vectorize_deal_isolated(user_id: int, deal_id: int, doc_ids: list[int]) -> 
         docs = db.query(Document).filter(Document.id.in_(doc_ids)).all()
         if not docs:
             return
-        ingest_and_analyze_deal(db, user, deal, docs)
+        try:
+            ingest_and_analyze_deal(db, user, deal, docs)
+        except Exception as exc:
+            logger.error(
+                f"Vectorization pipeline failed for deal {deal_id}: {exc}",
+                exc_info=True,
+            )
+            # If the crash happened before any doc got a vectorizer_doc_id,
+            # clear the job_id so the deal is not hidden from the API and will
+            # be retried on the next run.
+            db.rollback()
+            fresh_deal = db.query(Deal).filter(Deal.id == deal_id).first()
+            if fresh_deal and fresh_deal.vectorizer_job_id and fresh_deal.investment_type is None:
+                has_any_doc_id = (
+                    db.query(Document)
+                    .filter(
+                        Document.id.in_(doc_ids),
+                        Document.vectorizer_doc_id.isnot(None),
+                    )
+                    .first()
+                ) is not None
+                if not has_any_doc_id:
+                    fresh_deal.vectorizer_job_id = None
+                    db.commit()
+                    logger.info(
+                        f"[vectorizer] Deal {deal_id}: cleared orphaned job_id "
+                        "so deal remains visible and will retry next run"
+                    )
+            return
+
         # Re-query docs so we see the vectorizer_doc_id values committed by
         # ingest_and_analyze_deal.  Only mark a doc 'vectorized' when it
         # actually received an external doc ID — failed docs stay 'processed'

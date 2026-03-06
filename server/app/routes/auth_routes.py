@@ -1,3 +1,4 @@
+import hmac
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 limiter = Limiter(key_func=get_remote_address)
 
+_OAUTH_STATE_COOKIE = "oauth_state"
+_COOKIE_MAX_AGE = 300  # 5 minutes — enough for any OAuth round-trip
+
 
 class RefreshRequest(BaseModel):
     refresh_token: str
@@ -29,8 +33,19 @@ class RefreshRequest(BaseModel):
 @limiter.limit("20/minute")
 def login(request: Request):
     """Redirect the user to the Google OAuth 2.0 consent screen."""
-    auth_url, _state = google_auth_service.get_authorization_url()
-    return RedirectResponse(url=auth_url)
+    auth_url, state = google_auth_service.get_authorization_url()
+    response = RedirectResponse(url=auth_url)
+    # Store the state in an HttpOnly, SameSite=Lax cookie so the callback
+    # can verify it and prevent CSRF attacks.
+    response.set_cookie(
+        key=_OAUTH_STATE_COOKIE,
+        value=state,
+        max_age=_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=settings.FRONTEND_URL.startswith("https"),
+    )
+    return response
 
 
 @router.get("/callback")
@@ -39,11 +54,18 @@ def oauth_callback(request: Request, code: str, state: str = "", db: Session = D
     """
     Handle the Google OAuth callback.
 
-    1. Exchange authorization code for tokens.
-    2. Fetch user email from Google.
-    3. Upsert user record — Google refresh token is encrypted before storage.
-    4. Issue a JWT access token (24 h) + refresh token (7 d) and redirect.
+    1. Validate the state parameter against the cookie to prevent CSRF.
+    2. Exchange authorization code for tokens.
+    3. Fetch user email from Google.
+    4. Upsert user record — Google refresh token is encrypted before storage.
+    5. Issue a JWT access token (24 h) + refresh token (7 d) and redirect.
     """
+    # ── CSRF check: compare state param with cookie using constant-time compare ──
+    expected_state = request.cookies.get(_OAUTH_STATE_COOKIE, "")
+    if not expected_state or not hmac.compare_digest(expected_state, state):
+        logger.warning("OAuth state mismatch — possible CSRF attempt")
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}?error=state_mismatch")
+
     try:
         tokens = google_auth_service.exchange_code_for_tokens(code)
     except Exception as exc:
@@ -80,7 +102,10 @@ def oauth_callback(request: Request, code: str, state: str = "", db: Session = D
         f"&refresh_token={jwt_refresh}"
         f"&email={email}"
     )
-    return RedirectResponse(url=redirect_url)
+    response = RedirectResponse(url=redirect_url)
+    # Clear the state cookie — it's single-use
+    response.delete_cookie(key=_OAUTH_STATE_COOKIE)
+    return response
 
 
 @router.post("/refresh")
