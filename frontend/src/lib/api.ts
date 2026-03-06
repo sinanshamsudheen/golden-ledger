@@ -65,6 +65,15 @@ export interface LockedFileWithDeal {
   deal_name: string | null;
 }
 
+export interface DealFieldResponse {
+  field_name: string;
+  field_label: string | null;
+  field_type: string | null;
+  section: string | null;
+  value: string | null;
+  value_formatted: string | null;
+}
+
 export interface DealResponse {
   id: number;
   name: string;
@@ -74,6 +83,7 @@ export interface DealResponse {
   investment_type: string | null;
   deal_status: string | null;
   deal_reason: string | null;
+  deal_fields: DealFieldResponse[];
   locked_files: LockedFileDoc[];
 }
 
@@ -135,6 +145,13 @@ export const api = {
 
   getLockedFiles(): Promise<LockedFileWithDeal[]> {
     return apiFetch("/documents/locked");
+  },
+
+  updateDealField(dealId: number, fieldName: string, value: string | null): Promise<DealFieldResponse> {
+    return apiFetch(`/documents/deals/${dealId}/fields/${fieldName}`, {
+      method: "PATCH",
+      body: JSON.stringify({ value }),
+    });
   },
 
   getDocumentStats(): Promise<{

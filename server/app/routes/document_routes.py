@@ -1,7 +1,8 @@
 import logging
-from typing import List  # noqa: UP035
+from typing import List, Optional  # noqa: UP035
 
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -407,6 +408,54 @@ def get_deal(
         deal_reason=deal.deal_reason,
         deal_fields=deal_fields,
         locked_files=locked,
+    )
+
+
+class _FieldValueUpdate(BaseModel):
+    value: Optional[str] = None
+
+
+@router.patch("/deals/{deal_id}/fields/{field_name}", response_model=DealFieldResponse)
+@limiter.limit("60/minute")
+def update_deal_field(
+    deal_id: int,
+    field_name: str,
+    body: _FieldValueUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DealFieldResponse:
+    """Update the value of a single deal field."""
+    from fastapi import HTTPException
+
+    deal = (
+        db.query(Deal)
+        .filter(Deal.id == deal_id, Deal.user_id == current_user.id)
+        .first()
+    )
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    field = (
+        db.query(DealField)
+        .filter(DealField.deal_id == deal_id, DealField.field_name == field_name)
+        .first()
+    )
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
+
+    field.value = body.value
+    field.value_formatted = body.value
+    db.commit()
+    db.refresh(field)
+
+    return DealFieldResponse(
+        field_name=field.field_name,
+        field_label=field.field_label,
+        field_type=field.field_type,
+        section=field.section,
+        value=field.value,
+        value_formatted=field.value_formatted,
     )
 
 

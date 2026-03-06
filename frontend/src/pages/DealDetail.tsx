@@ -1,16 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { api, DealResponse, DealDocSlot, ArchivedDoc, LockedFileDoc } from "@/lib/api";
+import { api, DealResponse, DealDocSlot, ArchivedDoc, LockedFileDoc, DealFieldResponse } from "@/lib/api";
 import Navbar from "@/components/Navbar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ArrowLeft, ExternalLink, FileText, FileType, File, ChevronDown, Lock } from "lucide-react";
+import { ArrowLeft, ExternalLink, FileText, FileType, File, ChevronDown, Lock, Pencil, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -198,9 +199,7 @@ const DealDetail = () => {
               return (
                 <div className="mt-8 space-y-6">
                   {sections.map((section) => {
-                    const fields = deal.deal_fields.filter(
-                      (f) => f.section === section && f.value != null
-                    );
+                    const fields = deal.deal_fields.filter((f) => f.section === section);
                     if (fields.length === 0) return null;
                     return (
                       <div key={section}>
@@ -209,14 +208,19 @@ const DealDetail = () => {
                         </h2>
                         <div className="rounded-xl border border-border divide-y divide-border">
                           {fields.map((f) => (
-                            <div key={f.field_name} className="flex items-start justify-between gap-4 px-4 py-3">
-                              <span className="shrink-0 text-sm text-muted-foreground">
-                                {f.field_label ?? f.field_name}
-                              </span>
-                              <span className="text-right text-sm font-medium text-foreground">
-                                {f.value_formatted ?? f.value}
-                              </span>
-                            </div>
+                            <FieldRow
+                              key={f.field_name}
+                              field={f}
+                              dealId={deal.id}
+                              onUpdated={(updated) => {
+                                setDeal((prev) => prev ? {
+                                  ...prev,
+                                  deal_fields: prev.deal_fields.map((x) =>
+                                    x.field_name === updated.field_name ? updated : x
+                                  ),
+                                } : prev);
+                              }}
+                            />
                           ))}
                         </div>
                       </div>
@@ -288,6 +292,85 @@ const DealDetail = () => {
     </div>
   );
 };
+
+function FieldRow({
+  field,
+  dealId,
+  onUpdated,
+}: {
+  field: DealFieldResponse;
+  dealId: number;
+  onUpdated: (f: DealFieldResponse) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(field.value ?? "");
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const display = field.value_formatted ?? field.value;
+
+  function startEdit() {
+    setDraft(field.value ?? "");
+    setEditing(true);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+  function cancel() {
+    setEditing(false);
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      const updated = await api.updateDealField(dealId, field.field_name, draft.trim() || null);
+      onUpdated(updated);
+      setEditing(false);
+    } catch {
+      // keep editing open on error
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="group flex items-center justify-between gap-4 px-4 py-3">
+      <span className="shrink-0 text-sm text-muted-foreground">
+        {field.field_label ?? field.field_name}
+      </span>
+      {editing ? (
+        <div className="flex items-center gap-1.5">
+          <Input
+            ref={inputRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") cancel(); }}
+            className="h-7 w-48 text-right text-sm"
+            disabled={saving}
+          />
+          <button onClick={save} disabled={saving} className="text-emerald-400 hover:text-emerald-300 disabled:opacity-50">
+            <Check className="h-4 w-4" />
+          </button>
+          <button onClick={cancel} disabled={saving} className="text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className={cn("text-right text-sm font-medium", display ? "text-foreground" : "text-muted-foreground/40")}>
+            {display ?? "—"}
+          </span>
+          <button
+            onClick={startEdit}
+            className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function ArchivedRow({ doc }: { doc: ArchivedDoc }) {
   return (
