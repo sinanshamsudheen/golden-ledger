@@ -627,3 +627,94 @@ def ingest_and_analyze_deal(db, user, deal, docs: list) -> None:
             f"(investment_type={deal.investment_type!r}, "
             f"eligible_docs={len(ext_ids_for_extraction)})"
         )
+
+
+# ── Partial-retry entry point ─────────────────────────────────────────────────
+
+def rerun_analytical_and_fields(db, deal) -> None:
+    """
+    Re-run Stage 6 (Analytical) and/or Stage 7 (ExtractFields) for a deal
+    whose documents already have vectorizer_doc_ids from a previous run but
+    whose downstream data is missing or incomplete.
+
+    Called by run_vectorizer_only for deals that fall into one of two states:
+      - All docs vectorized (Stage 5 done) but investment_type is NULL
+        → re-run Stage 6 + Stage 7
+      - investment_type is set but deal_fields table is empty
+        → re-run Stage 7 only
+    """
+    from app.models.document import Document
+    from app.models.deal_field import DealField
+    from worker.field_extractor import extract_deal_fields
+
+    # Gather all docs for this deal that completed vectorization
+    docs = (
+        db.query(Document)
+        .filter(
+            Document.deal_id == deal.id,
+            Document.vectorizer_doc_id.isnot(None),
+        )
+        .all()
+    )
+
+    if not docs:
+        logger.warning(
+            f"[vectorizer] Deal {deal.id} ({deal.name!r}): "
+            "no vectorized docs found — cannot re-analyze"
+        )
+        return
+
+    ext_ids_all = [doc.vectorizer_doc_id for doc in docs]
+
+    # ── Stage 6: re-run Analytical if investment_type is missing ──────────────
+    if deal.investment_type is None:
+        logger.info(
+            f"[vectorizer] Deal {deal.id} ({deal.name!r}): "
+            f"re-running Stage 6 (Analytical) with {len(ext_ids_all)} doc(s)"
+        )
+        investment_type, deal_status, deal_reason = _run_analytical(ext_ids_all)
+        deal.investment_type = investment_type
+        deal.deal_status = deal_status
+        deal.deal_reason = deal_reason
+        db.commit()
+        logger.info(
+            f"[vectorizer] Deal {deal.id} ({deal.name!r}): "
+            f"Stage 6 done — investment_type={investment_type!r}  "
+            f"deal_status={deal_status!r}"
+        )
+
+    # ── Stage 7: re-run ExtractFields if deal_fields is empty ─────────────────
+    if deal.investment_type:
+        field_count = (
+            db.query(DealField)
+            .filter(DealField.deal_id == deal.id)
+            .count()
+        )
+        if field_count == 0:
+            ext_ids_for_extraction = [
+                doc.vectorizer_doc_id
+                for doc in docs
+                if doc.doc_type != "pitch_deck"
+            ]
+            if ext_ids_for_extraction:
+                logger.info(
+                    f"[vectorizer] Deal {deal.id} ({deal.name!r}): "
+                    f"re-running Stage 7 (ExtractFields) with "
+                    f"{len(ext_ids_for_extraction)} doc(s)"
+                )
+                extract_deal_fields(db, deal, ext_ids_for_extraction)
+            else:
+                logger.info(
+                    f"[vectorizer] Deal {deal.id} ({deal.name!r}): "
+                    "no non-pitch-deck docs available for field extraction"
+                )
+        else:
+            logger.info(
+                f"[vectorizer] Deal {deal.id} ({deal.name!r}): "
+                f"deal_fields already populated ({field_count} row(s)) — skipping Stage 7"
+            )
+    else:
+        logger.warning(
+            f"[vectorizer] Deal {deal.id} ({deal.name!r}): "
+            "investment_type still NULL after Stage 6 — skipping Stage 7"
+        )

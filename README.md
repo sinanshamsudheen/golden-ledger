@@ -386,7 +386,11 @@ Frontend runs at `http://localhost:5173` and proxies API requests to `http://loc
 conda activate lokam
 python worker/worker.py
 
-# Vectorizer-only mode (skip Drive sync + LLM, just re-run vectorization)
+# Vectorizer-only mode: skip Drive sync + LLM classification, run the full
+# vectorization pipeline (Stages 1–7) for all deals with incomplete state:
+#   Case A — docs not yet vectorized          → full Stage 1–7
+#   Case B — vectorized but no investment_type → Stage 6 + Stage 7
+#   Case C — investment_type set, no fields    → Stage 7 only
 python worker/worker.py --vectorize-only
 ```
 

@@ -64,7 +64,7 @@ from worker.parser import extract_text, PasswordProtectedError
 from worker.batch_analyzer import analyze_batch, AnalysisResult
 from worker.summarizer import text_summary
 from worker.deal_resolver import get_or_create_deal
-from worker.vectorizer import ingest_and_analyze_deal
+from worker.vectorizer import ingest_and_analyze_deal, rerun_analytical_and_fields
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 _LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s – %(message)s"
@@ -630,9 +630,17 @@ def _run() -> None:
 
 def run_vectorizer_only() -> None:
     """
-    Skip Drive sync + LLM analysis — only run the vectorizer + Analytical
-    pipeline on deals that already have documents in the DB but haven't
-    been vectorized yet (vectorizer_doc_id IS NULL on their docs).
+    Skip Drive sync + LLM analysis.  Runs the full vectorizer pipeline
+    (Stages 1–7) for all deals with incomplete pipeline state:
+
+      Case A — Unvectorized docs (vectorizer_doc_id IS NULL)
+                → full Stage 1–7 via ingest_and_analyze_deal
+
+      Case B — All docs vectorized but investment_type IS NULL
+                → Stage 6 (Analytical) + Stage 7 (ExtractFields)
+
+      Case C — investment_type set but deal_fields table empty
+                → Stage 7 (ExtractFields) only
     """
     logger.info("═══ Vectorizer-only run started ═══")
     db = SessionLocal()
@@ -648,33 +656,87 @@ def run_vectorizer_only() -> None:
             if not user or not user.folder_id:
                 continue
 
-            # All deals that have at least one unvectorized current doc
             latest_docs = get_latest_documents_per_type(db, uid)
-            per_deal: dict[int, list[int]] = {}   # deal_id -> [doc_id, ...]
+
+            # Case A: deals with at least one unvectorized doc → full Stage 1-7
+            per_deal_unvec: dict[int, list[int]] = {}
+            # Deals fully vectorized — check if Stage 6/7 are incomplete
+            fully_vec_deal_ids: set[int] = set()
+            per_deal_all: dict[int, list] = {}
             for doc in latest_docs:
-                if doc.deal_id is not None and doc.vectorizer_doc_id is None:
-                    per_deal.setdefault(doc.deal_id, []).append(doc.id)
+                if doc.deal_id is None:
+                    continue
+                per_deal_all.setdefault(doc.deal_id, []).append(doc)
+
+            for deal_id, docs in per_deal_all.items():
+                unvec = [d for d in docs if d.vectorizer_doc_id is None]
+                if unvec:
+                    per_deal_unvec[deal_id] = [d.id for d in docs]
+                else:
+                    fully_vec_deal_ids.add(deal_id)
+
+            # Case B/C: fully vectorized deals missing Stage 6 or 7
+            partial_deals: list[Deal] = []
+            if fully_vec_deal_ids:
+                from app.models.deal_field import DealField
+                candidate_deals = (
+                    db.query(Deal)
+                    .filter(Deal.id.in_(fully_vec_deal_ids))
+                    .all()
+                )
+                field_counts: dict[int, int] = {
+                    row.deal_id: row.cnt
+                    for row in db.query(
+                        DealField.deal_id,
+                        sqlalchemy.func.count(DealField.id).label("cnt"),
+                    )
+                    .filter(DealField.deal_id.in_(fully_vec_deal_ids))
+                    .group_by(DealField.deal_id)
+                    .all()
+                }
+                for deal in candidate_deals:
+                    missing_type = deal.investment_type is None
+                    missing_fields = field_counts.get(deal.id, 0) == 0
+                    if missing_type or missing_fields:
+                        partial_deals.append(deal)
 
             logger.info(
-                f"User {uid}: {len(per_deal)} deal(s) need vectorization"
+                f"User {uid}: {len(per_deal_unvec)} deal(s) need full vectorization (Case A), "
+                f"{len(partial_deals)} deal(s) need Stage 6/7 only (Cases B/C)"
             )
         finally:
             db.close()
 
-        # Run all deals in parallel; each opens its own session
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="vec") as pool:
-            futures = {
-                pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
-                for did, doc_ids in per_deal.items()
-            }
-            for future in as_completed(futures):
-                deal_id = futures[future]
-                exc = future.exception()
-                if exc:
-                    logger.error(
-                        f"Deal {deal_id} vectorization thread raised: {exc}",
-                        exc_info=exc,
-                    )
+        # Case A — full Stage 1-7
+        if per_deal_unvec:
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="vec") as pool:
+                futures = {
+                    pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
+                    for did, doc_ids in per_deal_unvec.items()
+                }
+                for future in as_completed(futures):
+                    deal_id = futures[future]
+                    exc = future.exception()
+                    if exc:
+                        logger.error(
+                            f"Deal {deal_id} vectorization thread raised: {exc}",
+                            exc_info=exc,
+                        )
+
+        # Cases B/C — re-run Stage 6 and/or Stage 7 only
+        for deal in partial_deals:
+            db = SessionLocal()
+            try:
+                fresh_deal = db.query(Deal).filter(Deal.id == deal.id).first()
+                if fresh_deal:
+                    rerun_analytical_and_fields(db, fresh_deal)
+            except Exception as exc:
+                logger.error(
+                    f"[vectorizer] Deal {deal.id} Stage 6/7 re-run failed: {exc}",
+                    exc_info=True,
+                )
+            finally:
+                db.close()
 
     logger.info("═══ Vectorizer-only run complete ═══")
 
