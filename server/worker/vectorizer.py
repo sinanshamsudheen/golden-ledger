@@ -601,15 +601,9 @@ def ingest_and_analyze_deal(db, user, deal, docs: list) -> None:
     )
 
     # ── Stage 7: Extract structured fields (investment-type specific) ─────────
-    # Use all completed doc IDs except pitch_deck — prescreening, investment
-    # memo, and meeting minutes carry the richest structured data.
     from worker.field_extractor import extract_deal_fields  # local import avoids circular
 
-    ext_ids_for_extraction = [
-        ext_doc_id
-        for doc, ext_doc_id in uploaded
-        if doc.doc_type != "pitch_deck" and ext_doc_id in ext_ids_completed
-    ]
+    ext_ids_for_extraction = list(ext_ids_completed)
 
     if deal.investment_type and ext_ids_for_extraction:
         extract_deal_fields(db, deal, ext_ids_for_extraction)
@@ -686,7 +680,6 @@ def rerun_analytical_and_fields(db, deal) -> None:
             ext_ids_for_extraction = [
                 doc.vectorizer_doc_id
                 for doc in docs
-                if doc.doc_type != "pitch_deck"
             ]
             if ext_ids_for_extraction:
                 logger.info(
