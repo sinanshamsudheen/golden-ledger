@@ -125,6 +125,15 @@ class DealFieldResponse(BaseModel):
     value_formatted: Optional[str] = None
 
 
+class DocumentStatsResponse(BaseModel):
+    """Aggregated document statistics for the dashboard."""
+    total_validated: int
+    shortlisted: int
+    archived: int
+    knowledge_base: int
+    duplicates: int
+
+
 class DealResponse(BaseModel):
     """Full deal with its current document slots, archive, and analytical results."""
 

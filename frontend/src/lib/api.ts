@@ -136,4 +136,14 @@ export const api = {
   getLockedFiles(): Promise<LockedFileWithDeal[]> {
     return apiFetch("/documents/locked");
   },
+
+  getDocumentStats(): Promise<{
+    total_validated: number;
+    shortlisted: number;
+    archived: number;
+    knowledge_base: number;
+    duplicates: number;
+  }> {
+    return apiFetch("/documents/stats");
+  },
 };

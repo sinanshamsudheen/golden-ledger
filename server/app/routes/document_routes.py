@@ -22,6 +22,7 @@ from ..schemas.document_schema import (
     LockedFileDoc,
     LockedFileWithDeal,
     DealFieldResponse,
+    DocumentStatsResponse,
 )
 from ..utils.auth import get_current_user
 from ..constants import DOC_TYPES as _DOC_TYPES, PIPELINE_TYPES as _PIPELINE_TYPES
@@ -59,6 +60,71 @@ def latest_documents(
         )
         for doc in documents
     ]
+
+
+@router.get("/stats", response_model=DocumentStatsResponse)
+@limiter.limit("60/minute")
+def document_stats(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DocumentStatsResponse:
+    """Return aggregated document statistics for the current user."""
+    uid = current_user.id
+
+    total_validated = (
+        db.query(Document)
+        .filter(Document.user_id == uid)
+        .count()
+    )
+
+    shortlisted = (
+        db.query(Document)
+        .filter(
+            Document.user_id == uid,
+            Document.version_status == "current",
+            Document.doc_type.in_(_DOC_TYPES),
+            Document.status.in_(["processed", "vectorized"]),
+        )
+        .count()
+    )
+
+    archived = (
+        db.query(Document)
+        .filter(
+            Document.user_id == uid,
+            Document.version_status == "superseded",
+        )
+        .count()
+    )
+
+    knowledge_base = (
+        db.query(Document)
+        .filter(
+            Document.user_id == uid,
+            Document.vectorizer_doc_id.isnot(None),
+        )
+        .count()
+    )
+
+    # Duplicates: file_ids that appear more than once for the same user
+    from sqlalchemy import func as _func
+    dup_subq = (
+        db.query(Document.file_id)
+        .filter(Document.user_id == uid)
+        .group_by(Document.file_id)
+        .having(_func.count(Document.id) > 1)
+        .subquery()
+    )
+    duplicates = db.query(dup_subq).count()
+
+    return DocumentStatsResponse(
+        total_validated=total_validated,
+        shortlisted=shortlisted,
+        archived=archived,
+        knowledge_base=knowledge_base,
+        duplicates=duplicates,
+    )
 
 
 @router.get("/all", response_model=List[AllDocumentResponse])
