@@ -132,7 +132,12 @@ def analyze_batch(
 
 def _analyze_chunk(chunk: list[dict], api_key: str, custom_prompt: Optional[str] = None) -> list[AnalysisResult]:
     if custom_prompt:
-        prompt = _maybe_append_schema(custom_prompt)
+        docs_block = _build_docs_block(chunk)
+        if "{DOCUMENTS}" in custom_prompt:
+            injected = custom_prompt.replace("{DOCUMENTS}", docs_block)
+        else:
+            injected = custom_prompt + "\n\n" + docs_block
+        prompt = _maybe_append_schema(injected)
     else:
         prompt = _build_prompt(chunk)
     try:
@@ -170,7 +175,7 @@ def _analyze_chunk(chunk: list[dict], api_key: str, custom_prompt: Optional[str]
         return [_fallback_result(item) for item in chunk]
 
 
-def _build_prompt(chunk: list[dict]) -> str:
+def _build_docs_block(chunk: list[dict]) -> str:
     text_limit = _cfg().LLM_TEXT_LIMIT
     sections = []
     for item in chunk:
@@ -180,7 +185,11 @@ def _build_prompt(chunk: list[dict]) -> str:
         sections.append(
             f'--- {item["custom_id"]}: {item["file_name"]}{location} ---\n{excerpt}'
         )
-    docs_block = "\n\n".join(sections)
+    return "\n\n".join(sections)
+
+
+def _build_prompt(chunk: list[dict]) -> str:
+    docs_block = _build_docs_block(chunk)
     valid_types_str = " | ".join(sorted(VALID_TYPES))
 
     prompt = f"""\
