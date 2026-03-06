@@ -5,13 +5,15 @@ import { api, DealResponse } from "@/lib/api";
 import Navbar from "@/components/Navbar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Folder, FolderOpen } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Folder, FolderOpen, Search } from "lucide-react";
 
 const Documents = () => {
   const { user, isLoading } = useAuth();
   const navigate = useNavigate();
   const [deals, setDeals] = useState<DealResponse[]>([]);
   const [fetching, setFetching] = useState(false);
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     if (!isLoading && !user) navigate("/", { replace: true });
@@ -35,19 +37,34 @@ const Documents = () => {
       return filledB - filledA; // most complete first
     });
 
+  const filtered = query.trim()
+    ? dealsWithDocs.filter((d) =>
+        d.name.toLowerCase().includes(query.trim().toLowerCase())
+      )
+    : dealsWithDocs;
+
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
       <main className="mx-auto max-w-6xl px-6 pt-24 pb-16">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="font-heading text-3xl font-semibold text-foreground">Deals</h1>
             <p className="mt-1 text-sm text-muted-foreground">
               {user.company_name && (
                 <span className="font-medium text-foreground">{user.company_name} · </span>
               )}
-              {dealsWithDocs.length} deal{dealsWithDocs.length !== 1 ? "s" : ""}
+              {filtered.length}{query.trim() ? ` of ${dealsWithDocs.length}` : ""} deal{dealsWithDocs.length !== 1 ? "s" : ""}
             </p>
+          </div>
+          <div className="relative w-full sm:w-64">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+            <Input
+              placeholder="Search deals…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="pl-9"
+            />
           </div>
         </div>
 
@@ -65,16 +82,16 @@ const Documents = () => {
         )}
 
         {/* Empty state */}
-        {!fetching && dealsWithDocs.length === 0 && (
+        {!fetching && filtered.length === 0 && (
           <p className="mt-16 text-center text-sm text-muted-foreground">
-            No deals found. Run the worker after configuring your Drive folder.
+            {query.trim() ? `No deals match "${query}".` : "No deals found. Run the worker after configuring your Drive folder."}
           </p>
         )}
 
         {/* Deal folder grid */}
-        {!fetching && dealsWithDocs.length > 0 && (
+        {!fetching && filtered.length > 0 && (
           <div className="mt-8 grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-            {dealsWithDocs.map((deal) => (
+            {filtered.map((deal) => (
               <DealCard key={deal.id} deal={deal} onClick={() => navigate(`/documents/${deal.id}`)} />
             ))}
           </div>
