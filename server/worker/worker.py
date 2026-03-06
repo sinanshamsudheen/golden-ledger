@@ -216,6 +216,9 @@ def process_user(db, user: User) -> _RunStats:
         return stats
 
     stats.new_files_found = len(new_files)
+    # Accumulate summaries across batches; applied only to current-slot docs
+    # after supersede step to avoid summarizing archived/skipped files.
+    summary_cache: dict[str, str] = {}
 
     # Get credentials once — shared across all download threads so the OAuth
     # token is refreshed exactly once, not once per file.
@@ -309,6 +312,8 @@ def process_user(db, user: User) -> _RunStats:
         analysis = analyze_batch(batch_items)
         for result in analysis:
             llm_results[result.custom_id] = result
+            if result.summary:
+                summary_cache[result.custom_id] = result.summary
 
         logger.info(f"User {user.id}: {len(prepared)} file(s) through LLM batch")
 
@@ -385,15 +390,21 @@ def process_user(db, user: User) -> _RunStats:
                     doc_type = r.doc_type
                     raw_deal_name: Optional[str] = r.deal_name
                     doc_date = r.doc_date or item["drive_created_time"]
-                    description = r.summary or text_summary(item["text"])
                     is_client = r.is_client
+                    # Cache text fallback for post-supersede summary step
+                    if not r.summary:
+                        fb = text_summary(item["text"])
+                        if fb:
+                            summary_cache[fid] = fb
                 else:
                     # LLM unavailable — store with safe defaults
                     doc_type = "pitch_deck"
                     raw_deal_name = None
                     doc_date = item["drive_created_time"]
-                    description = text_summary(item["text"])
                     is_client = False
+                    fb = text_summary(item["text"])
+                    if fb:
+                        summary_cache[fid] = fb
 
                 # Determine final status and deal_id before any DB write
                 if is_client:
@@ -420,7 +431,6 @@ def process_user(db, user: User) -> _RunStats:
                     drive_created_time=item["drive_created_time"],
                     checksum=item["checksum"],
                     doc_type=final_type,
-                    description=description,
                     doc_created_date=doc_date,
                     deal_id=deal_id,
                     folder_path=folder_path or None,
@@ -512,6 +522,26 @@ def process_user(db, user: User) -> _RunStats:
                 f"User {user.id}: retired {len(minutes_only_ids)} "
                 f"meeting-minutes-only deal(s) — {sum(len(by_deal[i]) for i in minutes_only_ids)} doc(s) marked client/skipped"
             )
+
+    # ── Step 4.6: Summarize current-slot docs only ───────────────────────────
+    # After supersede + retirement we know exactly which docs are "current".
+    # Run summarizer only on those to avoid paying for archived/skipped files.
+    current_doc_ids = {
+        doc.id
+        for doc in all_processed_docs
+        if doc.version_status == "current"
+    }
+    if current_doc_ids and summary_cache:
+        current_docs = db.query(Document).filter(Document.id.in_(current_doc_ids)).all()
+        updated_count = 0
+        for doc in current_docs:
+            summary = summary_cache.get(doc.file_id)
+            if summary and not doc.description:
+                doc.description = summary
+                updated_count += 1
+        if updated_count:
+            db.commit()
+            logger.info(f"User {user.id}: set description on {updated_count} current-slot doc(s)")
 
     # ── Step 5: Vectorize + analyze per deal (requires VECTORIZER_INGEST_URL) ────
     if not cfg.VECTORIZER_INGEST_URL:
