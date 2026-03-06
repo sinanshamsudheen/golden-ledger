@@ -15,7 +15,8 @@ class Document(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
-    file_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    # Unique per user — two users can reference the same Drive file_id (e.g. shared public drives)
+    file_id: Mapped[str] = mapped_column(String, nullable=False)
     file_name: Mapped[str] = mapped_column(String, nullable=False)
     file_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     doc_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -43,6 +44,8 @@ class Document(Base):
     deal: Mapped[Optional["Deal"]] = relationship("Deal", back_populates="documents")
 
     __table_args__ = (
+        # (user_id, file_id) — unique per user; two users may reference the same shared Drive file
+        Index("ix_documents_user_file_id", "user_id", "file_id", unique=True),
         # user_id alone — prerequisite for every user-scoped query
         Index("ix_documents_user_id", "user_id"),
         # (user_id, status) — all_documents / get_latest_documents_per_type
