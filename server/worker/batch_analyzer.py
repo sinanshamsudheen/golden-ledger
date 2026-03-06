@@ -68,7 +68,7 @@ class AnalysisResult:
     from_heuristic: bool = False
 
 
-_OUTPUT_SCHEMA_SENTINEL = "custom_id"
+_OUTPUT_SCHEMA_SENTINEL = '"results"'
 
 
 def _maybe_append_schema(prompt: str) -> str:

@@ -63,7 +63,6 @@ from worker.drive_ingestion import (
 )
 from worker.parser import extract_text, PasswordProtectedError
 from worker.batch_analyzer import analyze_batch, AnalysisResult
-from worker.summarizer import text_summary
 from worker.deal_resolver import get_or_create_deal
 from worker.vectorizer import ingest_and_analyze_deal, rerun_analytical_and_fields
 
@@ -310,12 +309,20 @@ def process_user(db, user: User) -> _RunStats:
             if not item.get("password_protected")
         ]
         analysis = analyze_batch(batch_items, custom_prompt=user.custom_prompt)
+        heuristic_count = 0
         for result in analysis:
             llm_results[result.custom_id] = result
             if result.summary:
                 summary_cache[result.custom_id] = result.summary
+            if result.from_heuristic:
+                heuristic_count += 1
 
-        logger.info(f"User {user.id}: {len(prepared)} file(s) through LLM batch")
+        logger.info(
+            f"User {user.id}: {len(prepared)} file(s) through LLM batch "
+            f"({heuristic_count} fallback/heuristic)"
+        )
+        if heuristic_count == len(analysis):
+            logger.warning(f"User {user.id}: ALL results are fallback — LLM batch likely failed entirely")
 
         # ── Reconnect DB after potentially long LLM batch ─────────────────────
         # The LLM call can take minutes; Railway's Postgres proxy may drop the
@@ -391,20 +398,12 @@ def process_user(db, user: User) -> _RunStats:
                     raw_deal_name: Optional[str] = r.deal_name
                     doc_date = r.doc_date or item["drive_created_time"]
                     is_client = r.is_client
-                    # Cache text fallback for post-supersede summary step
-                    if not r.summary:
-                        fb = text_summary(item["text"])
-                        if fb:
-                            summary_cache[fid] = fb
                 else:
                     # LLM unavailable — store with safe defaults
                     doc_type = "pitch_deck"
                     raw_deal_name = None
                     doc_date = item["drive_created_time"]
                     is_client = False
-                    fb = text_summary(item["text"])
-                    if fb:
-                        summary_cache[fid] = fb
 
                 # Determine final status and deal_id before any DB write
                 if is_client:
