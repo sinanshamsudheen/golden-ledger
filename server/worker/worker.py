@@ -502,7 +502,7 @@ def process_user(db, user: User) -> None:
         (user.id, deal_id, [d.id for d in deal_doc_list])
         for deal_id, deal_doc_list in per_deal_docs.items()
     ]
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="vec") as pool:
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="vec") as pool:
         futures = {
             pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
             for uid, did, doc_ids in deal_tasks
@@ -709,7 +709,7 @@ def run_vectorizer_only() -> None:
 
         # Case A — full Stage 1-7
         if per_deal_unvec:
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="vec") as pool:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="vec") as pool:
                 futures = {
                     pool.submit(_vectorize_deal_isolated, uid, did, doc_ids): did
                     for did, doc_ids in per_deal_unvec.items()

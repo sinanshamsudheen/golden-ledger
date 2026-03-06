@@ -182,7 +182,7 @@ Google Drive folder
   Step 4.5: retire meeting-minutes-only deals from pipeline
         │
         ▼
-  Vectorizer pipeline — 2 deals in parallel, each runs 7 stages:
+  Vectorizer pipeline — deals processed sequentially, each runs 7 stages:
   1. POST /v1/api/ingestions          → job_id + SAS upload URLs
   2. PUT  <SAS_URL>                   → upload file bytes (4 threads/deal, 3 retries)
   3. POST /v1/api/jobs/{id}/confirm-upload
