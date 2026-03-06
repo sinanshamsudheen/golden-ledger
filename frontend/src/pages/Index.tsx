@@ -17,7 +17,7 @@ const Index = () => {
       <ProtectedFilesSection />
       <DealsGrid />
       <footer className="border-t border-border py-12 text-center text-xs text-muted-foreground">
-        © 2025 Document Intelligence. All rights reserved.
+        © 2025 PCI Intelligence. All rights reserved.
       </footer>
     </div>
   );

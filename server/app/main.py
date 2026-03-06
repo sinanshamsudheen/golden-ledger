@@ -38,7 +38,7 @@ class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(
     title="Golden Ledger API",
-    description="Investment Document Intelligence – Onboarding Pipeline (POC)",
+    description="PCI Intelligence – Onboarding Pipeline (POC)",
     version="0.1.0",
 )
 

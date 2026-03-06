@@ -17,7 +17,7 @@ const Landing = () => {
       <nav className="fixed top-0 left-0 right-0 z-50 border-b border-border/30 bg-background/80 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
           <span className="font-heading text-xl font-semibold tracking-wide text-foreground">
-            Document Intelligence
+            PCI Intelligence
           </span>
         </div>
       </nav>
@@ -29,9 +29,7 @@ const Landing = () => {
         className="flex min-h-screen flex-col items-center justify-center px-6 text-center"
       >
         <h1 className="font-heading text-5xl font-bold leading-tight tracking-tight text-foreground md:text-6xl lg:text-7xl">
-          Investment Document
-          <br />
-          Intelligence
+          PCI Intelligence
         </h1>
         <p className="mt-6 max-w-xl text-lg text-muted-foreground">
           Automatically organize and analyze your investment documents from Google Drive.
@@ -48,7 +46,7 @@ const Landing = () => {
       </motion.section>
 
       <footer className="border-t border-border py-12 text-center text-xs text-muted-foreground">
-        © 2025 Document Intelligence. All rights reserved.
+        © 2025 PCI Intelligence. All rights reserved.
       </footer>
     </div>
   );

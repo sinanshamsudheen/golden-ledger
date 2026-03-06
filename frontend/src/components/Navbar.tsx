@@ -19,7 +19,7 @@ const Navbar = () => {
           to={user ? "/dashboard" : "/"}
           className="font-heading text-xl font-semibold tracking-wide text-foreground hover:text-primary transition-colors duration-200"
         >
-          Document Intelligence
+          PCI Intelligence
         </Link>
         <div className="flex items-center gap-6">
           {user && NAV_LINKS.map(({ label, to }) => (
