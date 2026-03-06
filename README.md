@@ -219,7 +219,7 @@ Google Drive folder
 
 ### Scalability
 
-- **Memory-bounded batching** — `INGEST_BATCH=500` caps peak RAM regardless of Drive folder size. A 10,000-file folder runs in 20 iterations, not one monolithic load.
+- **Memory-bounded batching** — `INGEST_BATCH_SIZE=500` (configurable via `.env`) caps peak RAM regardless of Drive folder size. A 10,000-file folder runs in 20 iterations, not one monolithic load.
 - **Parallel downloads** — 20 concurrent Drive API threads per batch, saturating typical network bandwidth.
 - **Parallel LLM classification** — 30 docs/call × up to 10 concurrent API calls = 300 docs classified simultaneously. 10,000 files complete in ~344 total API calls.
 - **Per-deal isolation** — each deal runs its vectorizer pipeline in its own DB session (thread-safe, no shared SQLAlchemy state). 2 deals run concurrently — tuned to avoid throttling dev-tier Azure Functions.

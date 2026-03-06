@@ -204,34 +204,26 @@ def _create_ingestion_job(docs: list, user_id: int) -> dict | None:
 # ── Stage 2 (helper) ──────────────────────────────────────────────────────────
 
 def _put_file(put_url: str, content: bytes, filename: str) -> bool:
-    """PUT raw bytes to the SAS URL, with up to _MAX_HTTP_RETRIES retries."""
+    """PUT raw bytes to the SAS URL, retrying via _retried_request on network errors."""
     mime = _guess_mime(filename)
-    for attempt in range(1, _MAX_HTTP_RETRIES + 2):   # +1 for initial attempt
-        try:
-            resp = requests.put(
-                put_url,
-                headers={"x-ms-blob-type": "BlockBlob", "Content-Type": mime},
-                data=content,
-                timeout=120,
-            )
-            if resp.status_code in (200, 201):
-                return True
-            logger.warning(
-                f"[vectorizer] Upload attempt {attempt} failed for '{filename}': "
-                f"HTTP {resp.status_code} \u2014 {resp.text[:200]}"
-            )
-        except Exception as exc:
-            logger.warning(
-                f"[vectorizer] Upload attempt {attempt} exception for '{filename}': {exc}"
-            )
-        if attempt <= _MAX_HTTP_RETRIES:
-            wait = _HTTP_RETRY_BACKOFF[min(attempt - 1, len(_HTTP_RETRY_BACKOFF) - 1)]
-            logger.info(f"[vectorizer] Retrying upload for '{filename}' in {wait:.0f}s ...")
-            time.sleep(wait)
-    logger.error(
-        f"[vectorizer] Upload failed for '{filename}' after {_MAX_HTTP_RETRIES + 1} attempts"
-    )
-    return False
+    try:
+        resp = _retried_request(
+            "PUT",
+            put_url,
+            headers={"x-ms-blob-type": "BlockBlob", "Content-Type": mime},
+            data=content,
+            timeout=120,
+        )
+        if resp.status_code in (200, 201):
+            return True
+        logger.error(
+            f"[vectorizer] Upload failed for '{filename}': "
+            f"HTTP {resp.status_code} — {resp.text[:200]}"
+        )
+        return False
+    except Exception as exc:
+        logger.error(f"[vectorizer] Upload failed for '{filename}': {exc}")
+        return False
 
 
 # ── Stage 3 ───────────────────────────────────────────────────────────────────

@@ -42,6 +42,7 @@ if os.path.exists(_env_path):
 
 # ── Internal imports ──────────────────────────────────────────────────────────
 from app.config import settings as cfg
+from app.constants import PIPELINE_TYPES as _PIPELINE_TYPES_CONST
 from app.database import SessionLocal, engine
 from app.models.user import User
 from app.models.document import Document
@@ -91,63 +92,82 @@ _root.addHandler(_fh)
 logger = logging.getLogger("worker")
 logger.info(f"Logging to {_log_file}")
 
-INGEST_BATCH = 500  # max files per download → LLM → persist cycle — caps peak RAM
-
 # ── Version management ────────────────────────────────────────────────────────
 
-def _mark_superseded_versions(db, document: Document) -> None:
+def _bulk_mark_superseded(db, processed_docs: list) -> None:
     """
-    Mark older documents with the same type+deal as superseded.
+    Mark older documents as superseded in bulk — one UPDATE per (user_id, doc_type, group)
+    instead of one SELECT + commit per document.
 
     Two-pass strategy:
-      Pass A (deal-scoped)  — when deal_id is known, group by (user_id, doc_type, deal_id).
-      Pass B (folder-scoped) — when deal_id is None, group by (user_id, doc_type, folder_path)
-                               so files in misc/ or unresolved folders still get versioned.
+      Pass A (deal-scoped)   — docs with deal_id: group by (user_id, doc_type, deal_id).
+      Pass B (folder-scoped) — docs without deal_id: group by (user_id, doc_type, folder_path).
 
     Both passes require doc_created_date to determine which is newer.
     """
-    if not document.doc_created_date:
-        return
+    # Split into two buckets
+    deal_docs: list = []
+    folder_docs: list = []
+    for doc in processed_docs:
+        if not doc.doc_created_date:
+            continue
+        if doc.deal_id:
+            deal_docs.append(doc)
+        elif doc.folder_path:
+            folder_docs.append(doc)
 
-    if document.deal_id:
-        # Pass A: deal-scoped versioning
-        older = (
+    total_superseded = 0
+
+    # Pass A: deal-scoped — group by (user_id, doc_type, deal_id), keep newest per group
+    a_groups: dict[tuple, list] = {}
+    for doc in deal_docs:
+        key = (doc.user_id, doc.doc_type, doc.deal_id)
+        a_groups.setdefault(key, []).append(doc)
+
+    for (user_id, doc_type, deal_id), docs in a_groups.items():
+        newest = max(docs, key=lambda d: d.doc_created_date)
+        exclude_ids = [d.id for d in docs]
+        n = (
             db.query(Document)
             .filter(
-                Document.user_id == document.user_id,
-                Document.doc_type == document.doc_type,
-                Document.deal_id == document.deal_id,
-                Document.id != document.id,
-                Document.doc_created_date < document.doc_created_date,
+                Document.user_id == user_id,
+                Document.doc_type == doc_type,
+                Document.deal_id == deal_id,
+                Document.id.notin_(exclude_ids),
+                Document.doc_created_date < newest.doc_created_date,
                 Document.version_status == "current",
             )
-            .all()
+            .update({"version_status": "superseded"}, synchronize_session="fetch")
         )
-    else:
-        # Pass B: folder-scoped versioning for dealless documents
-        if not document.folder_path:
-            return
-        older = (
+        total_superseded += n
+
+    # Pass B: folder-scoped — group by (user_id, doc_type, folder_path)
+    b_groups: dict[tuple, list] = {}
+    for doc in folder_docs:
+        key = (doc.user_id, doc.doc_type, doc.folder_path)
+        b_groups.setdefault(key, []).append(doc)
+
+    for (user_id, doc_type, folder_path), docs in b_groups.items():
+        newest = max(docs, key=lambda d: d.doc_created_date)
+        exclude_ids = [d.id for d in docs]
+        n = (
             db.query(Document)
             .filter(
-                Document.user_id == document.user_id,
-                Document.doc_type == document.doc_type,
+                Document.user_id == user_id,
+                Document.doc_type == doc_type,
                 Document.deal_id.is_(None),
-                Document.folder_path == document.folder_path,
-                Document.id != document.id,
-                Document.doc_created_date < document.doc_created_date,
+                Document.folder_path == folder_path,
+                Document.id.notin_(exclude_ids),
+                Document.doc_created_date < newest.doc_created_date,
                 Document.version_status == "current",
             )
-            .all()
+            .update({"version_status": "superseded"}, synchronize_session="fetch")
         )
+        total_superseded += n
 
-    for doc in older:
-        doc.version_status = "superseded"
-        logger.info(
-            f"Marked '{doc.file_name}' (id={doc.id}) as superseded by '{document.file_name}'"
-        )
-    if older:
+    if total_superseded:
         db.commit()
+        logger.info(f"Bulk supersede: marked {total_superseded} document(s) as superseded")
 
 
 # ── Per-user pipeline ─────────────────────────────────────────────────────────
@@ -156,7 +176,7 @@ def process_user(db, user: User) -> None:
     """
     Run the full ingestion pipeline for a single user.
 
-    Files are processed in memory-bounded batches of INGEST_BATCH to cap
+    Files are processed in memory-bounded batches of cfg.INGEST_BATCH_SIZE to cap
     peak RAM.  Credentials are fetched once and reused across all downloads
     to avoid an OAuth round-trip per file.  Version management and
     vectorization run once after all batches for a consistent final state.
@@ -180,11 +200,11 @@ def process_user(db, user: User) -> None:
     all_processed_docs: list[Document] = []
 
     total = len(new_files)
-    total_batches = (total + INGEST_BATCH - 1) // INGEST_BATCH
+    total_batches = (total + cfg.INGEST_BATCH_SIZE - 1) // cfg.INGEST_BATCH_SIZE
 
-    for batch_start in range(0, total, INGEST_BATCH):
-        batch = new_files[batch_start : batch_start + INGEST_BATCH]
-        batch_num = batch_start // INGEST_BATCH + 1
+    for batch_start in range(0, total, cfg.INGEST_BATCH_SIZE):
+        batch = new_files[batch_start : batch_start + cfg.INGEST_BATCH_SIZE]
+        batch_num = batch_start // cfg.INGEST_BATCH_SIZE + 1
         logger.info(
             f"User {user.id}: batch {batch_num}/{total_batches} — {len(batch)} file(s)"
         )
@@ -281,6 +301,10 @@ def process_user(db, user: User) -> None:
             engine.dispose()  # recycle all pooled connections
 
         # ── Step 3: Persist ───────────────────────────────────────────────────
+        # Pre-fetch all deals for this user once — reused by get_or_create_deal
+        # to avoid a DB round-trip per document during fuzzy matching.
+        existing_deals = db.query(Deal).filter(Deal.user_id == user.id).all()
+
         batch_persisted = 0
         for item in prepared:
             fid = item["file_meta"]["id"]
@@ -303,7 +327,7 @@ def process_user(db, user: User) -> None:
                 if folder_path:
                     hint = folder_path.split("/")[0].strip()
                     if hint:
-                        d = get_or_create_deal(db, user.id, hint)
+                        d = get_or_create_deal(db, user.id, hint, existing_deals)
                         locked_deal_id = d.id if d else None
                 update_document(
                     db,
@@ -376,7 +400,7 @@ def process_user(db, user: User) -> None:
 
                 deal_id: Optional[int] = None
                 if raw_deal_name:
-                    deal = get_or_create_deal(db, user.id, raw_deal_name)
+                    deal = get_or_create_deal(db, user.id, raw_deal_name, existing_deals)
                     deal_id = deal.id if deal else None
 
                 updated = update_document(
@@ -412,15 +436,13 @@ def process_user(db, user: User) -> None:
     # ── Step 4: Version management (once, after all batches) ─────────────────
     # Running after all docs are persisted is more correct: the full date
     # picture is visible, so older duplicates across batch boundaries are caught.
-    for doc in all_processed_docs:
-        _mark_superseded_versions(db, doc)
+    _bulk_mark_superseded(db, all_processed_docs)
 
     # ── Step 4.5: Retire meeting-minutes-only deals ───────────────────────────
     # A deal whose only classified documents are meeting_minutes is a
     # client/portfolio deal, not a pipeline opportunity.
     # Single SELECT across all touched deals, then one bulk UPDATE — avoids
     # N individual queries + M individual commits that would slow at scale.
-    _PIPELINE_TYPES = {"pitch_deck", "investment_memo", "prescreening_report"}
     all_deal_ids = list({doc.deal_id for doc in all_processed_docs if doc.deal_id is not None})
 
     if all_deal_ids:
@@ -429,7 +451,7 @@ def process_user(db, user: User) -> None:
             .filter(
                 Document.deal_id.in_(all_deal_ids),
                 Document.user_id == user.id,
-                Document.doc_type.in_(list(_PIPELINE_TYPES) + ["meeting_minutes"]),
+                Document.doc_type.in_(list(_PIPELINE_TYPES_CONST) + ["meeting_minutes"]),
                 Document.status.in_(["processed", "vectorized"]),
             )
             .all()
@@ -443,7 +465,7 @@ def process_user(db, user: User) -> None:
         minutes_only_ids = {
             deal_id
             for deal_id, docs in by_deal.items()
-            if not any(d.doc_type in _PIPELINE_TYPES for d in docs)
+            if not any(d.doc_type in _PIPELINE_TYPES_CONST for d in docs)
         }
 
         if minutes_only_ids:

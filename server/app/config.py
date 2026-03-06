@@ -11,7 +11,13 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     ENCRYPTION_KEY: str
     OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4o-mini"
     FRONTEND_URL: str = "http://localhost:5173"
+
+    # ── Worker tuning ─────────────────────────────────────────────────────────
+    LLM_CHUNK_SIZE: int = 30    # docs per LLM call in batch_analyzer
+    LLM_TEXT_LIMIT: int = 1500  # chars of text sent per doc to LLM
+    INGEST_BATCH_SIZE: int = 500  # max files per download → LLM → persist cycle
 
     # ── External vectorizer (Invitus AI Insights) — all optional ─────────────
     # If VECTORIZER_INGEST_URL is not set the worker skips the vectorization step.

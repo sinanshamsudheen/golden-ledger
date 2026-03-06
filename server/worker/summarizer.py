@@ -13,6 +13,13 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _cfg():
+    """Lazy-import settings so the module can be imported without .env present."""
+    from app.config import settings
+    return settings
+
+
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BACKOFF = (5.0, 15.0, 30.0)   # wait (seconds) before attempt n+1
 
@@ -46,7 +53,7 @@ def generate_description(text: str) -> Optional[str]:
             client = OpenAI(api_key=api_key)
             truncated = text[:3000]
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=_cfg().OPENAI_MODEL,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": _USER_PROMPT.format(text=truncated)},

@@ -103,10 +103,13 @@ def _normalize_key(name: str) -> str:
     return _NON_ALNUM.sub("", name)
 
 
-def _fuzzy_find_deal(db: Session, user_id: int, key: str, raw_name: str):
+def _fuzzy_find_deal(existing_deals: list, key: str, raw_name: str):
     """
-    Scan all existing deals for this user and return the best fuzzy match
-    above FUZZY_THRESHOLD, or None if nothing is close enough.
+    Scan a pre-fetched list of deals and return the best fuzzy match above
+    FUZZY_THRESHOLD, or None if nothing is close enough.
+
+    Accepts a pre-fetched list so the caller can load deals once and reuse
+    across many documents, avoiding O(N×M) DB queries.
 
     Uses token_set_ratio which handles word reordering and subset matches:
       "Acme"          vs "Acme Robotics"   → ~89  ✓ match
@@ -114,19 +117,13 @@ def _fuzzy_find_deal(db: Session, user_id: int, key: str, raw_name: str):
       "Acme Robotics" vs "Acme Inc"        → ~80  ✓ match (above threshold)
       "Acme"          vs "Zeta Energy"     → ~22  ✗ no match
     """
-    if not _RAPIDFUZZ_AVAILABLE:
-        return None
-
-    from app.models.deal import Deal
-
-    existing = db.query(Deal).filter(Deal.user_id == user_id).all()
-    if not existing:
+    if not _RAPIDFUZZ_AVAILABLE or not existing_deals:
         return None
 
     best_deal = None
     best_score = 0
 
-    for deal in existing:
+    for deal in existing_deals:
         score = _fuzz.token_set_ratio(key, deal.name_key)
         if score > best_score:
             best_score = score
@@ -142,10 +139,19 @@ def _fuzzy_find_deal(db: Session, user_id: int, key: str, raw_name: str):
     return None
 
 
-def get_or_create_deal(db: Session, user_id: int, raw_name: str):
+def get_or_create_deal(
+    db: Session,
+    user_id: int,
+    raw_name: str,
+    existing_deals: list | None = None,
+):
     """
     Look up a Deal by normalized key for this user; create it if not found.
     Returns the Deal ORM object.
+
+    Pass `existing_deals` (pre-fetched list of Deal ORM objects for this user)
+    to avoid a repeated DB scan on every call.  When omitted, falls back to
+    querying the DB — preserves backwards compatibility.
 
     Deduplication: "Acme Corp", "ACME INC", and "acme" all produce key "acme"
     and resolve to the same Deal row.
@@ -158,16 +164,23 @@ def get_or_create_deal(db: Session, user_id: int, raw_name: str):
     if not key or len(key) < 2:
         return None
 
-    deal = (
-        db.query(Deal)
-        .filter(Deal.user_id == user_id, Deal.name_key == key)
-        .first()
-    )
+    # Exact key match — check cache first, then DB
+    if existing_deals is not None:
+        deal = next((d for d in existing_deals if d.name_key == key), None)
+    else:
+        deal = (
+            db.query(Deal)
+            .filter(Deal.user_id == user_id, Deal.name_key == key)
+            .first()
+        )
     if deal:
         return deal
 
     # ── Fuzzy pass: catch near-duplicates before creating a new row ──────────
-    fuzzy_match = _fuzzy_find_deal(db, user_id, key, raw_name)
+    deals_for_fuzzy = existing_deals if existing_deals is not None else (
+        db.query(Deal).filter(Deal.user_id == user_id).all()
+    )
+    fuzzy_match = _fuzzy_find_deal(deals_for_fuzzy, key, raw_name)
     if fuzzy_match:
         return fuzzy_match
 
@@ -176,6 +189,9 @@ def get_or_create_deal(db: Session, user_id: int, raw_name: str):
         db.add(deal)
         db.commit()
         db.refresh(deal)
+        # Add to the caller's cache so subsequent lookups see this new deal
+        if existing_deals is not None:
+            existing_deals.append(deal)
         logger.info(f"Created new deal: '{display_name}' (key='{key}') for user {user_id}")
         return deal
     except IntegrityError:

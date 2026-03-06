@@ -32,9 +32,13 @@ logger = logging.getLogger(__name__)
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BACKOFF = (5.0, 15.0, 30.0)   # wait (seconds) before attempt n+1
 
-CHUNK_SIZE = 30          # docs per LLM call
-TEXT_LIMIT = 1500        # chars of text sent per doc to LLM
 _FALLBACK_TYPE = "pitch_deck"
+
+
+def _cfg():
+    """Lazy-import settings so the module can be imported without .env present."""
+    from app.config import settings
+    return settings
 
 # ── Output schema (shown verbatim to the model) ───────────────────────────────
 OUTPUT_SCHEMA = """
@@ -83,7 +87,8 @@ def analyze_batch(
         logger.warning("OPENAI_API_KEY not set — using fallback for all documents")
         return [_fallback_result(item) for item in items]
 
-    chunks = [items[i : i + CHUNK_SIZE] for i in range(0, len(items), CHUNK_SIZE)]
+    chunk_size = _cfg().LLM_CHUNK_SIZE
+    chunks = [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
     # Run all chunk calls in parallel — each is an independent HTTP request
     chunk_results_map: dict[int, list[AnalysisResult]] = {}
@@ -113,7 +118,7 @@ def _analyze_chunk(chunk: list[dict], api_key: str) -> list[AnalysisResult]:
 
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=_cfg().OPENAI_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -144,9 +149,10 @@ def _analyze_chunk(chunk: list[dict], api_key: str) -> list[AnalysisResult]:
 
 
 def _build_prompt(chunk: list[dict]) -> str:
+    text_limit = _cfg().LLM_TEXT_LIMIT
     sections = []
     for item in chunk:
-        excerpt = item["text"][:TEXT_LIMIT].replace("---", "- -")
+        excerpt = item["text"][:text_limit].replace("---", "- -")
         folder = item.get("folder_path", "").strip()
         location = f" [folder: {folder}]" if folder else ""
         sections.append(

@@ -24,17 +24,12 @@ from ..schemas.document_schema import (
     DealFieldResponse,
 )
 from ..utils.auth import get_current_user
+from ..constants import DOC_TYPES as _DOC_TYPES, PIPELINE_TYPES as _PIPELINE_TYPES
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 limiter = Limiter(key_func=get_remote_address)
-
-_DOC_TYPES = ["pitch_deck", "investment_memo", "prescreening_report", "meeting_minutes"]
-
-# Deals whose ONLY substantive documents are meeting minutes are client/portfolio
-# deals, not pipeline opportunities — hide them from the UI entirely.
-_PIPELINE_TYPES = {t for t in _DOC_TYPES if t != "meeting_minutes"}
 
 
 def _is_minutes_only(current_by_type: dict) -> bool:
@@ -367,6 +362,15 @@ def locked_files(
         .all()
     )
 
+    # Batch-load all referenced deals in one query (avoids N+1)
+    deal_ids_needed = {doc.deal_id for doc in docs if doc.deal_id}
+    deals_by_id: dict[int, Deal] = {}
+    if deal_ids_needed:
+        deals_by_id = {
+            d.id: d
+            for d in db.query(Deal).filter(Deal.id.in_(deal_ids_needed)).all()
+        }
+
     # Deduplicate by file_id (same file can appear in multiple sub-folders)
     seen: set[str] = set()
     result: list[LockedFileWithDeal] = []
@@ -374,10 +378,7 @@ def locked_files(
         if doc.file_id in seen:
             continue
         seen.add(doc.file_id)
-        deal_name: str | None = None
-        if doc.deal_id:
-            deal = db.query(Deal).filter(Deal.id == doc.deal_id).first()
-            deal_name = deal.name if deal else None
+        deal = deals_by_id.get(doc.deal_id) if doc.deal_id else None
         result.append(
             LockedFileWithDeal(
                 id=doc.id,
@@ -385,7 +386,7 @@ def locked_files(
                 name=doc.file_name,
                 date=_fmt_date(doc.doc_created_date),
                 deal_id=doc.deal_id,
-                deal_name=deal_name,
+                deal_name=deal.name if deal else None,
             )
         )
     return result
