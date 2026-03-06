@@ -140,6 +140,57 @@ def copy_user_data(db: Session, from_email: str, to_email: str) -> None:
 
     db.commit()
 
+    # ── Dealless / skipped documents (other, client, etc.) ────────────────────
+    # These have deal_id=None and were never touched by the per-deal loop above.
+    # We still need to copy them so the worker's known_ids dedup skips them for
+    # the tester — without them the worker would re-download all 8k+ files.
+    print(f"\n  Copying dealless documents (skipped/other, skipped/client, etc.)...")
+    all_src_doc_file_ids: set[str] = {
+        row[0]
+        for row in db.query(Document.file_id)
+        .filter(Document.user_id == src_user.id)
+        .all()
+    }
+    already_dst_file_ids: set[str] = {
+        row[0]
+        for row in db.query(Document.file_id)
+        .filter(Document.user_id == dst_user.id)
+        .all()
+    }
+
+    remaining_file_ids = all_src_doc_file_ids - already_dst_file_ids
+    if remaining_file_ids:
+        remaining_docs = (
+            db.query(Document)
+            .filter(
+                Document.user_id == src_user.id,
+                Document.file_id.in_(remaining_file_ids),
+            )
+            .all()
+        )
+        for src_doc in remaining_docs:
+            dst_doc = Document(
+                user_id=dst_user.id,
+                file_id=src_doc.file_id,
+                file_name=src_doc.file_name,
+                file_path=src_doc.file_path,
+                doc_type=src_doc.doc_type,
+                description=src_doc.description,
+                doc_created_date=src_doc.doc_created_date,
+                drive_created_time=src_doc.drive_created_time,
+                checksum=src_doc.checksum,
+                status=src_doc.status,
+                deal_id=None,   # dealless — no deal to map to
+                folder_path=src_doc.folder_path,
+                version_status=src_doc.version_status,
+                vectorizer_doc_id=src_doc.vectorizer_doc_id,
+            )
+            db.add(dst_doc)
+            docs_created += 1
+
+        db.commit()
+        print(f"  Copied {len(remaining_docs)} dealless/skipped doc(s).")
+
     print(f"\n{'─'*50}")
     print(f"Done.")
     print(f"  Deals   : {deals_created} created, {deals_skipped} skipped (already existed)")
