@@ -3,6 +3,11 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+class DriveFolder(BaseModel):
+    id: str
+    label: str
+
+
 class UserBase(BaseModel):
     email: str
 
@@ -24,6 +29,7 @@ class UpdateProfileRequest(BaseModel):
 class UserResponse(UserBase):
     id: int
     folder_id: Optional[str] = None
+    folder_ids: Optional[list[DriveFolder]] = None
     company_name: Optional[str] = None
     custom_prompt: Optional[str] = None
     created_at: datetime

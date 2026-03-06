@@ -1,11 +1,12 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, DriveFolder } from "@/lib/api";
 
 interface User {
   id: number;
   email: string;
   folder_id: string | null;
+  folder_ids: DriveFolder[] | null;
   company_name: string | null;
   custom_prompt: string | null;
 }

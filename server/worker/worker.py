@@ -824,7 +824,7 @@ def run_vectorizer_only() -> None:
         db = SessionLocal()
         try:
             user = db.query(User).filter(User.id == uid).first()
-            if not user or not user.folder_id:
+            if not user or not user.drive_folders:
                 continue
 
             latest_docs = get_latest_documents_per_type(db, uid)

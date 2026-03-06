@@ -48,9 +48,10 @@ def get_unprocessed_files(
     instead of per-file lookups, reducing query count from O(N) to O(1).
     Passes shared credentials to list_files_recursive for parallel BFS.
     """
-    if not user.refresh_token or not user.folder_id:
+    folders = user.drive_folders
+    if not user.refresh_token or not folders:
         logger.warning(
-            f"User {user.id} ({user.email}) has no refresh_token or folder_id – skipping"
+            f"User {user.id} ({user.email}) has no refresh_token or configured folders – skipping"
         )
         return []
 
@@ -58,22 +59,32 @@ def get_unprocessed_files(
         # Build credentials once — shared across all parallel folder-listing threads
         credentials = get_credentials(user.plaintext_refresh_token)
         service = build_drive_service_from_credentials(credentials)
-        all_files = list_files_recursive(service, user.folder_id, credentials=credentials)
 
-        # Strip the root folder name from every folder_path so it's never
-        # mistaken for a deal name. E.g. "TestDrive/Acme/Q1" → "Acme/Q1"
-        root_meta = service.files().get(fileId=user.folder_id, fields="name").execute()
-        root_name = root_meta.get("name", "")
-        if root_name:
-            prefix = root_name + "/"
-            for f in all_files:
-                fp = f.get("folder_path", "")
-                if fp == root_name:
-                    f["folder_path"] = ""
-                elif fp.startswith(prefix):
-                    f["folder_path"] = fp[len(prefix):]
+        all_files: List[Dict[str, Any]] = []
+        for folder_entry in folders:
+            fid = folder_entry["id"]
+            try:
+                folder_files = list_files_recursive(service, fid, credentials=credentials)
+
+                # Strip the root folder name from folder_path so it's never
+                # mistaken for a deal name. E.g. "TestDrive/Acme/Q1" → "Acme/Q1"
+                root_meta = service.files().get(fileId=fid, fields="name").execute()
+                root_name = root_meta.get("name", "")
+                if root_name:
+                    prefix = root_name + "/"
+                    for f in folder_files:
+                        fp = f.get("folder_path", "")
+                        if fp == root_name:
+                            f["folder_path"] = ""
+                        elif fp.startswith(prefix):
+                            f["folder_path"] = fp[len(prefix):]
+
+                all_files.extend(folder_files)
+            except Exception as exc:
+                logger.error(f"Drive API error for user {user.id} folder {fid}: {exc}")
+                # Continue with other folders rather than aborting
     except Exception as exc:
-        logger.error(f"Drive API error for user {user.id}: {exc}")
+        logger.error(f"Drive credentials error for user {user.id}: {exc}")
         return []
 
     # ── Batch DB lookup — 2 queries regardless of how many files exist ─────────

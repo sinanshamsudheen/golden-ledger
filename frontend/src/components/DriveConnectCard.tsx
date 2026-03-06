@@ -3,31 +3,50 @@ import { motion } from "framer-motion";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
-import { api } from "@/lib/api";
+import { api, DriveFolder } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Trash2, FolderPlus, FolderOpen } from "lucide-react";
 
 const DriveConnectCard = () => {
   const { user, login, refreshUser } = useAuth();
   const { toast } = useToast();
-  const [folderPath, setFolderPath] = useState(user?.folder_id ? "" : "");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [folderPath, setFolderPath] = useState("");
+  const [isAdding, setIsAdding] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
-  const handleSubmit = async () => {
+  const handleAdd = async () => {
     if (!folderPath.trim()) return;
-    setIsSubmitting(true);
+    setIsAdding(true);
     try {
-      await api.setFolder(folderPath.trim());
+      await api.addFolder(folderPath.trim());
       await refreshUser();
-      toast({ title: "Folder configured", description: folderPath.trim() });
+      setFolderPath("");
+      toast({ title: "Folder added" });
     } catch (err: unknown) {
       toast({
-        title: "Failed to set folder",
+        title: "Failed to add folder",
         description: err instanceof Error ? err.message : "Unknown error",
         variant: "destructive",
       });
     } finally {
-      setIsSubmitting(false);
+      setIsAdding(false);
+    }
+  };
+
+  const handleRemove = async (folderId: string) => {
+    setRemovingId(folderId);
+    try {
+      await api.removeFolder(folderId);
+      await refreshUser();
+      toast({ title: "Folder removed" });
+    } catch (err: unknown) {
+      toast({
+        title: "Failed to remove folder",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setRemovingId(null);
     }
   };
 
@@ -45,7 +64,7 @@ const DriveConnectCard = () => {
             Connect Your Drive
           </h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Sign in with Google to link your Drive folder.
+            Sign in with Google to link your Drive folders.
           </p>
           <Button
             onClick={login}
@@ -57,6 +76,10 @@ const DriveConnectCard = () => {
       </motion.section>
     );
   }
+
+  const folders: DriveFolder[] = user.folder_ids ?? (
+    user.folder_id ? [{ id: user.folder_id, label: user.folder_id }] : []
+  );
 
   return (
     <motion.section
@@ -71,39 +94,67 @@ const DriveConnectCard = () => {
           Connect Your Drive
         </h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          {user.folder_id
-            ? "Folder is configured. Update it below."
-            : "Link a folder to begin syncing documents."}
+          Add one or more Drive folders to sync documents from.
         </p>
-        {user.folder_id && (
-          <a
-            href={`https://drive.google.com/drive/folders/${user.folder_id}`}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
-          >
-            <ExternalLink className="h-3 w-3" />
-            {user.folder_id}
-          </a>
-        )}
-        <div className="mt-6 space-y-4">
+
+        {/* Folder list */}
+        <div className="mt-6">
+          {folders.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border py-8 text-center">
+              <FolderOpen className="h-8 w-8 text-muted-foreground/40" />
+              <p className="text-sm text-muted-foreground">No folders configured yet.</p>
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {folders.map((f) => (
+                <li
+                  key={f.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-4 py-3"
+                >
+                  <a
+                    href={`https://drive.google.com/drive/folders/${f.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex min-w-0 items-center gap-2 text-sm text-primary hover:underline"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{f.label}</span>
+                  </a>
+                  <button
+                    onClick={() => handleRemove(f.id)}
+                    disabled={removingId === f.id}
+                    aria-label="Remove folder"
+                    className="shrink-0 cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/* Add folder input */}
+        <div className="mt-4 flex gap-2">
           <Input
             value={folderPath}
             onChange={(e) => setFolderPath(e.target.value)}
-            placeholder="Paste a Drive URL or path like /InvestmentDocs/StartupA/"
+            onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+            placeholder="Paste a Drive URL or path like /InvestmentDocs/"
             className="border-border bg-background text-foreground placeholder:text-muted-foreground/60"
           />
           <Button
-            onClick={handleSubmit}
-            disabled={isSubmitting || !folderPath.trim()}
-            className="w-full bg-primary text-primary-foreground hover:bg-accent"
+            onClick={handleAdd}
+            disabled={isAdding || !folderPath.trim()}
+            className="shrink-0 bg-primary text-primary-foreground hover:bg-accent"
           >
-            {isSubmitting ? "Saving…" : "Start Sync"}
+            <FolderPlus className="mr-1.5 h-4 w-4" />
+            {isAdding ? "Adding…" : "Add"}
           </Button>
         </div>
       </div>
       <p className="mt-4 text-xs text-muted-foreground">
-        Your documents will be automatically processed during the nightly sync.
+        Documents will be automatically processed during the nightly sync.
       </p>
     </motion.section>
   );

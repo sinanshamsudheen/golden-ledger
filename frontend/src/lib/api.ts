@@ -87,28 +87,46 @@ export interface DealResponse {
   locked_files: LockedFileDoc[];
 }
 
+export interface DriveFolder {
+  id: string;
+  label: string;
+}
+
+type UserPayload = {
+  id: number;
+  email: string;
+  folder_id: string | null;
+  folder_ids: DriveFolder[] | null;
+  company_name: string | null;
+  custom_prompt: string | null;
+};
+
 export const api = {
   /** Redirect browser to Google OAuth */
   loginWithGoogle(): void {
     window.location.href = `${BASE_URL}/auth/login`;
   },
 
-  getMe(): Promise<{ id: number; email: string; folder_id: string | null; company_name: string | null; custom_prompt: string | null }> {
+  getMe(): Promise<UserPayload> {
     return apiFetch("/auth/me");
   },
 
-  updateProfile(data: { company_name?: string; custom_prompt?: string | null }): Promise<{ id: number; email: string; folder_id: string | null; company_name: string | null; custom_prompt: string | null }> {
+  updateProfile(data: { company_name?: string; custom_prompt?: string | null }): Promise<UserPayload> {
     return apiFetch("/auth/me", {
       method: "PATCH",
       body: JSON.stringify(data),
     });
   },
 
-  setFolder(folderPath: string): Promise<{ folder_id: string; folder_path: string }> {
+  addFolder(folderPath: string): Promise<{ folder_id: string; label: string; folders: DriveFolder[] }> {
     return apiFetch("/drive/folder", {
       method: "POST",
       body: JSON.stringify({ folder_path: folderPath }),
     });
+  },
+
+  removeFolder(folderId: string): Promise<{ folders: DriveFolder[] }> {
+    return apiFetch(`/drive/folder/${folderId}`, { method: "DELETE" });
   },
 
   getSyncStatus(): Promise<{
