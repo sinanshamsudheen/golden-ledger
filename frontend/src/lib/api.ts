@@ -93,11 +93,11 @@ export const api = {
     window.location.href = `${BASE_URL}/auth/login`;
   },
 
-  getMe(): Promise<{ id: number; email: string; folder_id: string | null; company_name: string | null }> {
+  getMe(): Promise<{ id: number; email: string; folder_id: string | null; company_name: string | null; custom_prompt: string | null }> {
     return apiFetch("/auth/me");
   },
 
-  updateProfile(data: { company_name: string }): Promise<{ id: number; email: string; folder_id: string | null; company_name: string | null }> {
+  updateProfile(data: { company_name?: string; custom_prompt?: string | null }): Promise<{ id: number; email: string; folder_id: string | null; company_name: string | null; custom_prompt: string | null }> {
     return apiFetch("/auth/me", {
       method: "PATCH",
       body: JSON.stringify(data),

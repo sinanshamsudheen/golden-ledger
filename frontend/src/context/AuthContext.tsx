@@ -7,6 +7,7 @@ interface User {
   email: string;
   folder_id: string | null;
   company_name: string | null;
+  custom_prompt: string | null;
 }
 
 interface AuthContextValue {

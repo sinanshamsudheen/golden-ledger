@@ -139,8 +139,11 @@ def update_me(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Update mutable profile fields (company_name)."""
-    current_user.company_name = body.company_name.strip() or None
+    """Update mutable profile fields (company_name, custom_prompt)."""
+    if body.company_name is not None:
+        current_user.company_name = body.company_name.strip() or None
+    if body.custom_prompt is not None:
+        current_user.custom_prompt = body.custom_prompt.strip() or None
     db.commit()
     db.refresh(current_user)
     return current_user

@@ -17,13 +17,15 @@ class UserUpdate(BaseModel):
 
 
 class UpdateProfileRequest(BaseModel):
-    company_name: str
+    company_name: Optional[str] = None
+    custom_prompt: Optional[str] = None
 
 
 class UserResponse(UserBase):
     id: int
     folder_id: Optional[str] = None
     company_name: Optional[str] = None
+    custom_prompt: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

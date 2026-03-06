@@ -309,7 +309,7 @@ def process_user(db, user: User) -> _RunStats:
             for item in prepared
             if not item.get("password_protected")
         ]
-        analysis = analyze_batch(batch_items)
+        analysis = analyze_batch(batch_items, custom_prompt=user.custom_prompt)
         for result in analysis:
             llm_results[result.custom_id] = result
             if result.summary:

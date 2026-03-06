@@ -68,10 +68,26 @@ class AnalysisResult:
     from_heuristic: bool = False
 
 
+_OUTPUT_SCHEMA_SENTINEL = "custom_id"
+
+
+def _maybe_append_schema(prompt: str) -> str:
+    """Append the output schema block if the user's custom prompt omits it."""
+    if _OUTPUT_SCHEMA_SENTINEL not in prompt:
+        schema_block = f"""
+
+OUTPUT SCHEMA (respond with exactly this structure):
+{OUTPUT_SCHEMA.strip()}
+"""
+        return prompt + schema_block
+    return prompt
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def analyze_batch(
     items: list[dict],
+    custom_prompt: Optional[str] = None,
 ) -> list[AnalysisResult]:
     """
     Analyze a list of documents.  Each item must have keys:
@@ -93,7 +109,10 @@ def analyze_batch(
     # Run all chunk calls in parallel — each is an independent HTTP request
     chunk_results_map: dict[int, list[AnalysisResult]] = {}
     with ThreadPoolExecutor(max_workers=min(len(chunks), 10)) as pool:
-        futures = {pool.submit(_analyze_chunk, chunk, api_key): idx for idx, chunk in enumerate(chunks)}
+        futures = {
+            pool.submit(_analyze_chunk, chunk, api_key, custom_prompt): idx
+            for idx, chunk in enumerate(chunks)
+        }
         for future in as_completed(futures):
             idx = futures[future]
             try:
@@ -111,8 +130,11 @@ def analyze_batch(
 
 # ── Chunk processing ──────────────────────────────────────────────────────────
 
-def _analyze_chunk(chunk: list[dict], api_key: str) -> list[AnalysisResult]:
-    prompt = _build_prompt(chunk)
+def _analyze_chunk(chunk: list[dict], api_key: str, custom_prompt: Optional[str] = None) -> list[AnalysisResult]:
+    if custom_prompt:
+        prompt = _maybe_append_schema(custom_prompt)
+    else:
+        prompt = _build_prompt(chunk)
     try:
         from openai import OpenAI
 
