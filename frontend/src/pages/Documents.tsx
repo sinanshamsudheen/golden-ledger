@@ -27,7 +27,13 @@ const Documents = () => {
 
   // Separate deals with docs from ungrouped (deal_count === 0 filtered out server-side,
   // but the "Uncategorized" pseudo-deal is handled by the backend eventually)
-  const dealsWithDocs = deals.filter((d) => d.doc_count > 0 || d.archived.length > 0);
+  const dealsWithDocs = deals
+    .filter((d) => d.doc_count > 0 || d.archived.length > 0)
+    .sort((a, b) => {
+      const filledA = Object.values(a.documents).filter(Boolean).length;
+      const filledB = Object.values(b.documents).filter(Boolean).length;
+      return filledB - filledA; // most complete first
+    });
 
   return (
     <div className="min-h-screen bg-background">
