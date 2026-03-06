@@ -137,10 +137,6 @@ def list_deals(
 
     result: list[DealResponse] = []
     for deal in deals:
-        # Hide deals that went through the full pipeline but couldn't be classified
-        if deal.vectorizer_job_id is not None and deal.investment_type is None:
-            continue
-
         docs = (
             db.query(Document)
             .filter(
@@ -253,10 +249,6 @@ def get_deal(
         .first()
     )
     if not deal:
-        raise HTTPException(status_code=404, detail="Deal not found")
-
-    # Hide deals that went through the full pipeline but couldn't be classified
-    if deal.vectorizer_job_id is not None and deal.investment_type is None:
         raise HTTPException(status_code=404, detail="Deal not found")
 
     docs = (
