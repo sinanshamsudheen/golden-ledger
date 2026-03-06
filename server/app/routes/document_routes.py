@@ -67,10 +67,10 @@ def all_documents(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = Query(default=500, ge=1, le=2000),
+    limit: int = Query(default=2000, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
 ) -> List[AllDocumentResponse]:
-    """Return processed documents for the current user (paginated, default 500)."""
+    """Return processed documents for the current user (paginated, default 2000)."""
     docs = (
         db.query(Document)
         .filter(
@@ -106,11 +106,11 @@ def list_deals(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = Query(default=200, ge=1, le=1000),
+    limit: int = Query(default=1000, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> List[DealResponse]:
     """
-    Return deals for the current user (paginated, default 200), each with:
+    Return deals for the current user (paginated, default 1000), each with:
     - documents: the 4 canonical type slots (current versions only)
     - archived: superseded documents
     """
@@ -358,10 +358,10 @@ def locked_files(
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = Query(default=500, ge=1, le=2000),
+    limit: int = Query(default=2000, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
 ) -> List[LockedFileWithDeal]:
-    """Return password-protected files for the current user (paginated, default 500)."""
+    """Return password-protected files for the current user (paginated, default 2000)."""
     docs = (
         db.query(Document)
         .filter(
