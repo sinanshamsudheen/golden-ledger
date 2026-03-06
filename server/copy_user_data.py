@@ -25,7 +25,7 @@ from app.database import SessionLocal
 from app.models import User, Deal, Document, DealField
 
 
-def copy_user_data(db: Session, from_email: str, to_email: str) -> None:
+def copy_user_data(db: Session, from_email: str, to_email: str, force: bool = False) -> None:
     src_user = db.query(User).filter(User.email == from_email).first()
     if not src_user:
         print(f"ERROR: source user '{from_email}' not found in the database.")
@@ -56,6 +56,14 @@ def copy_user_data(db: Session, from_email: str, to_email: str) -> None:
             .filter(Deal.user_id == dst_user.id, Deal.name_key == src_deal.name_key)
             .first()
         )
+
+        if existing_deal and force:
+            db.query(DealField).filter(DealField.deal_id == existing_deal.id).delete()
+            db.query(Document).filter(Document.deal_id == existing_deal.id).delete()
+            db.delete(existing_deal)
+            db.flush()
+            existing_deal = None
+            print(f"  [DEL  deal] '{src_deal.name}' deleted for re-copy")
 
         if existing_deal:
             dst_deal = existing_deal
@@ -203,11 +211,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Copy all deals/docs/fields from one user to another.")
     parser.add_argument("--from", dest="from_email", required=True, help="Source user email")
     parser.add_argument("--to",   dest="to_email",   required=True, help="Target user email")
+    parser.add_argument("--force", action="store_true", help="Delete and re-copy existing deals instead of skipping")
     args = parser.parse_args()
 
     db = SessionLocal()
     try:
-        copy_user_data(db, args.from_email, args.to_email)
+        copy_user_data(db, args.from_email, args.to_email, force=args.force)
     except Exception as e:
         db.rollback()
         print(f"\nERROR: {e}")
