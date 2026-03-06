@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { ExternalLink } from "lucide-react";
 
 const DriveConnectCard = () => {
   const { user, login, refreshUser } = useAuth();
@@ -74,6 +75,17 @@ const DriveConnectCard = () => {
             ? "Folder is configured. Update it below."
             : "Link a folder to begin syncing documents."}
         </p>
+        {user.folder_id && (
+          <a
+            href={`https://drive.google.com/drive/folders/${user.folder_id}`}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
+          >
+            <ExternalLink className="h-3 w-3" />
+            {user.folder_id}
+          </a>
+        )}
         <div className="mt-6 space-y-4">
           <Input
             value={folderPath}
