@@ -159,7 +159,6 @@ export const api = {
     shortlisted: number;
     archived: number;
     knowledge_base: number;
-    duplicates: number;
   }> {
     return apiFetch("/documents/stats");
   },

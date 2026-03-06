@@ -8,7 +8,6 @@ interface DocumentStats {
   shortlisted: number;
   archived: number;
   knowledge_base: number;
-  duplicates: number;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -37,7 +36,6 @@ const SyncStatusCard = () => {
         { label: "Documents Shortlisted", value: stats.shortlisted },
         { label: "Documents Archived", value: stats.archived },
         { label: "Added to Knowledge Base", value: stats.knowledge_base },
-        { label: "Duplicate Files Found", value: stats.duplicates, muted: stats.duplicates === 0 },
       ]
     : [];
 

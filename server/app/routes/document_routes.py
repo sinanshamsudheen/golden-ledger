@@ -108,23 +108,11 @@ def document_stats(
         .count()
     )
 
-    # Duplicates: file_ids that appear more than once for the same user
-    from sqlalchemy import func as _func
-    dup_subq = (
-        db.query(Document.file_id)
-        .filter(Document.user_id == uid)
-        .group_by(Document.file_id)
-        .having(_func.count(Document.id) > 1)
-        .subquery()
-    )
-    duplicates = db.query(dup_subq).count()
-
     return DocumentStatsResponse(
         total_validated=total_validated,
         shortlisted=shortlisted,
         archived=archived,
         knowledge_base=knowledge_base,
-        duplicates=duplicates,
     )
 
 

@@ -131,7 +131,6 @@ class DocumentStatsResponse(BaseModel):
     shortlisted: int
     archived: int
     knowledge_base: int
-    duplicates: int
 
 
 class DealResponse(BaseModel):
