@@ -1,6 +1,7 @@
 # Golden Ledger
 
 **PCI Intelligence Platform** — automatically ingests, classifies, and analyses investment documents from Google Drive, surfaces the latest version of each document type per deal, and extracts structured deal fields using an external RAG pipeline.
+<img width="1710" height="1112" alt="image" src="https://github.com/user-attachments/assets/3e4d5211-a5f4-4bc1-8ef2-9ecb87d9e0ee" />
 
 ---
 
